@@ -1,0 +1,12 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="card">
+  <h1>HOA AGM Admin Dashboard</h1>
+  <p>Use the navigation above to manage the meeting.</p>
+  <p class="subtle">
+    Voting link for owners (and developer):
+    <code>{{ vote_url }}</code>
+  </p>
+</div>
+{% endblock %}
