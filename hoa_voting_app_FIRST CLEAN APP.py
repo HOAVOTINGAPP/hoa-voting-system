@@ -4,231 +4,20 @@ import sqlite3
 import random
 import string
 from io import StringIO, BytesIO
+
 from flask import Flask, request, redirect, url_for, render_template_string, send_file, flash, session
 import qrcode
-import hashlib
-from datetime import datetime
-
-# ================================
-# HOA DATABASE ACCESS LAYER
-# ================================
-
-def get_db():
-    path = session.get("hoa_db_path")
-    if not path:
-        raise RuntimeError("No HOA database selected")
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    return conn
-def ensure_schema():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS owners (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            erf TEXT UNIQUE NOT NULL,
-            name TEXT,
-            id_number TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS registrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            erf TEXT UNIQUE NOT NULL,
-            proxies INTEGER DEFAULT 0,
-            otp TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS topics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            description TEXT,
-            is_open INTEGER DEFAULT 0
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS options (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            topic_id INTEGER NOT NULL,
-            label TEXT NOT NULL
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS votes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            topic_id INTEGER,
-            erf TEXT,
-            option_id INTEGER,
-            weight INTEGER
-        );
-    """)
-
-    cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uniq_vote
-        ON votes(topic_id, erf);
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS developer_settings (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            is_active INTEGER DEFAULT 0,
-            base_votes INTEGER DEFAULT 0,
-            proxy_count INTEGER DEFAULT 0,
-            comment TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS developer_proxies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            erf TEXT UNIQUE,
-            note TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS owner_proxies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            primary_erf TEXT,
-            proxy_erf TEXT UNIQUE
-        );
-    """)
-
-    cur.execute("INSERT OR IGNORE INTO developer_settings (id) VALUES (1);")
-
-    # --- cryptographic vote ledger ---
-    cur.execute("PRAGMA table_info(votes);")
-    cols = [c[1] for c in cur.fetchall()]
-
-    try:
-        if "prev_hash" not in cols:
-            cur.execute("ALTER TABLE votes ADD COLUMN prev_hash TEXT;")
-
-        if "vote_hash" not in cols:
-            cur.execute("ALTER TABLE votes ADD COLUMN vote_hash TEXT;")
-
-        if "timestamp" not in cols:
-            cur.execute("ALTER TABLE votes ADD COLUMN timestamp TEXT;")
-    except sqlite3.OperationalError:
-        pass
-
-    conn.commit()
-    conn.close()
-
-
-# ================================
-# CRYPTOGRAPHIC VOTE LEDGER
-# ================================
-
-def compute_vote_hash(prev_hash, erf, topic_id, option_id, weight, timestamp):
-    payload = f"{prev_hash}|{erf}|{topic_id}|{option_id}|{weight}|{timestamp}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 app = Flask(__name__)
 app.secret_key = "change_this_secret"  # change for production
 DB_NAME = "hoa_meeting.db"
 ADMIN_PASSWORD = "hoaadmin"  # change for production
 
-def verify_vote_chain():
-    conn = get_db()
-    cur = conn.cursor()
 
-    rows = cur.execute("""
-        SELECT prev_hash, erf, topic_id, option_id, weight, timestamp, vote_hash
-        FROM votes
-        ORDER BY id ASC
-    """).fetchall()
-
-    last_hash = "GENESIS"
-
-    for r in rows:
-        expected = compute_vote_hash(
-            last_hash,
-            r["erf"],
-            r["topic_id"],
-            r["option_id"],
-            r["weight"],
-            r["timestamp"]
-        )
-
-        if expected != r["vote_hash"]:
-            conn.close()
-            return False
-
-        last_hash = r["vote_hash"]
-
-    conn.close()
-    return True
-
-# =================================================
-# AUTHENTICATION LAYER (ADDED)
-# =================================================
-from flask import session, redirect, url_for
-
-MANAGEMENT_DB = "management/db/management.db"
-
-def get_management_db():
-    conn = sqlite3.connect(MANAGEMENT_DB)
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
-
-def require_admin():
-    if not session.get("admin_logged_in"):
-        return redirect("/admin/login")
-
-@app.route("/admin/login", methods=["GET","POST"])
-def admin_login():
-    if request.method == "POST":
-        email = request.form.get("username","").strip()
-        password = request.form.get("password","").strip()
-
-        conn = get_management_db()
-        user = conn.execute(
-            "SELECT hoa_id FROM hoa_users WHERE email=? AND password=? AND enabled=1",
-            (email,password)
-        ).fetchone()
-
-        if not user:
-            return render_template_string("<h3>Invalid credentials</h3>")
-
-        hoa = conn.execute(
-            "SELECT db_path FROM hoas WHERE id=? AND enabled=1",
-            (user["hoa_id"],)
-        ).fetchone()
-        conn.close()
-
-        if not hoa:
-            return render_template_string("<h3>HOA disabled</h3>")
-
-        session.clear()
-        session["admin_logged_in"] = True
-        session["hoa_db_path"] = hoa["db_path"]
-
-        ensure_schema()
-
-        return redirect("/admin")
-
-    return render_template_string("""
-    <html><body>
-    <h2>Admin Login</h2>
-    <form method="post">
-      <input name="username" placeholder="Email"><br>
-      <input type="password" name="password" placeholder="Password"><br>
-      <button>Login</button>
-    </form>
-    </body></html>
-    """)
-
-@app.route("/admin/logout")
-def admin_logout():
-    session.clear()
-    return redirect("/admin/login")
 
 
 def init_db():
@@ -478,6 +267,61 @@ BASE_HEAD_PUBLIC = """<!doctype html>
 
 def admin_logged_in():
     return session.get("admin_logged_in", False)
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if password == ADMIN_PASSWORD:
+            session["admin_logged_in"] = True
+            flash("Logged in as admin.")
+            return redirect(url_for("admin_dashboard"))
+        else:
+            flash("Incorrect password.")
+    template = """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Admin Login</title>
+    <style>
+    body { font-family: Arial, sans-serif; background:#f3f4f6; margin:0; }
+    .shell { max-width: 400px; margin:0 auto; padding:20px; }
+    .card { background:white; padding:16px 20px; border-radius:10px; box-shadow:0 4px 12px rgba(0,0,0,0.08); margin-top:40px; }
+    input[type=password] { width:100%; padding:6px 8px; border-radius:6px; border:1px solid #d1d5db; }
+    button { background:#2563eb; color:white; border:none; border-radius:999px; padding:6px 14px; cursor:pointer; font-size:14px; }
+  </style>
+</head>
+<body>
+<div class="shell">
+<div class="card">
+<h1>Admin Login</h1>
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <ul class="messages">
+      {% for m in messages %}
+        <li>{{ m }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+{% endwith %}
+<form method="post">
+  <p><label>Password:<br><input type="password" name="password" required></label></p>
+  <button type="submit">Login</button>
+</form>
+</div>
+</div>
+</body>
+</html>
+"""
+    return render_template_string(template)
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.pop("admin_logged_in", None)
+    flash("Logged out.")
+    return redirect(url_for("admin_login"))
 
 
 @app.route("/admin")
@@ -1115,40 +959,10 @@ def admin_developer_vote(topic_id):
             flash("Developer already voted on this topic.")
             conn.close()
             return redirect(url_for("admin_developer_vote", topic_id=topic_id))
-
-        # --- cryptographic vote ledger ---
-        prev = cur.execute(
-            "SELECT vote_hash FROM votes WHERE topic_id=? ORDER BY id DESC LIMIT 1;",
-            (topic_id,)
-        ).fetchone()
-
-        prev_hash = prev["vote_hash"] if prev else "GENESIS"
-        timestamp = datetime.utcnow().isoformat()
-
-        vote_hash = compute_vote_hash(
-            prev_hash,
-            "DEVELOPER",
-            topic_id,
-            opt_id_int,
-            total_weight,
-            timestamp
+        cur.execute(
+            "INSERT INTO votes (topic_id, erf, option_id, weight) VALUES (?, 'DEVELOPER', ?, ?);",
+            (topic_id, opt_id_int, total_weight),
         )
-
-        cur.execute("""
-            INSERT INTO votes (
-                topic_id, erf, option_id, weight,
-                prev_hash, vote_hash, timestamp
-            )
-            VALUES (?, 'DEVELOPER', ?, ?, ?, ?, ?);
-        """, (
-            topic_id,
-            opt_id_int,
-            total_weight,
-            prev_hash,
-            vote_hash,
-            timestamp
-        ))
-
         conn.commit()
         conn.close()
         flash("Developer vote recorded.")
@@ -1190,17 +1004,6 @@ def admin_export():
 """ + BASE_TAIL
     return render_template_string(template)
 
-@app.route("/admin/verify")
-def admin_verify_chain():
-    if not admin_logged_in():
-        return redirect(url_for("admin_login"))
-
-    ok = verify_vote_chain()
-
-    if ok:
-        return "<h2>Vote chain is VALID</h2>"
-    else:
-        return "<h2 style='color:red'>Vote chain has been TAMPERED</h2>"
 
 @app.route("/admin/export/votes")
 def admin_export_votes():
@@ -1283,42 +1086,28 @@ def admin_export_developer():
         download_name="hoa_developer_profile.csv",
     )
 
+
 @app.route("/admin/export/registrations")
 def admin_export_registrations():
     if not admin_logged_in():
         return redirect(url_for("admin_login"))
-
     conn = get_db()
     cur = conn.cursor()
+    owners = cur.execute("SELECT * FROM owners ORDER BY erf;").fetchall()
+    regs = cur.execute("SELECT * FROM registrations;").fetchall()
+    regs_by_erf = {r["erf"]: r for r in regs}
 
-    # ===============================
-    # REGISTERED ERFs ONLY (quorum base)
-    # ===============================
-    registrations = cur.execute("""
-        SELECT r.erf, r.proxies, o.name
-        FROM registrations r
-        JOIN owners o ON o.erf = r.erf
-        ORDER BY r.erf;
-    """).fetchall()
-
-    registered_erfs = {r["erf"] for r in registrations}
-
-    # ===============================
-    # Proxy / Developer data
-    # ===============================
     dev_proxies_rows = cur.execute("SELECT erf FROM developer_proxies;").fetchall()
     dev_proxy_erfs = {row["erf"] for row in dev_proxies_rows}
 
     owner_proxies_rows = cur.execute("SELECT primary_erf, proxy_erf FROM owner_proxies;").fetchall()
     owner_proxy_map = {row["proxy_erf"]: row["primary_erf"] for row in owner_proxies_rows}
-
     primary_link_counts = {}
     for row in owner_proxies_rows:
         primary_link_counts[row["primary_erf"]] = primary_link_counts.get(row["primary_erf"], 0) + 1
 
     settings = cur.execute("SELECT * FROM developer_settings WHERE id = 1;").fetchone()
     dev_linked_count_row = cur.execute("SELECT COUNT(*) AS c FROM developer_proxies;").fetchone()
-
     if settings:
         base_votes = settings["base_votes"] or 0
         proxy_count = settings["proxy_count"] or 0
@@ -1328,137 +1117,95 @@ def admin_export_registrations():
     else:
         base_votes = proxy_count = dev_linked_count = dev_total_weight = dev_active = 0
 
+    has_developer_owner = any(o["erf"] == "DEVELOPER" for o in owners)
     conn.close()
-    # ===============================
-    # CSV generation
-    # ===============================
+
     text_buffer = StringIO()
     writer = csv.writer(text_buffer)
-
     writer.writerow([
         "ERF", "Owner Name", "Registered?", "Numeric Proxies",
-        "Linked ERFs (owner proxies)", "Total Vote Weight",
-        "Is Developer", "Blocked?", "Blocked By"
+        "Linked ERFs (owner proxies)", "Total Vote Weight (if voting individually)",
+        "Is Developer", "Blocked (Developer/Owner Proxy)?", "Blocked By",
     ])
-
     running_total = 0
-
-    # ===============================
-    # Registered owners
-    # ===============================
-    for r in registrations:
-        erf = r["erf"]
-        name = r["name"] or ""
-        numeric_proxies = r["proxies"] or 0
-
+    for o in owners:
+        erf = o["erf"]
+        name = o["name"] or ""
+        reg = regs_by_erf.get(erf)
+        registered = "Yes" if reg else "No"
+        numeric_proxies = reg["proxies"] if reg else 0
+        is_dev = "Yes" if erf == "DEVELOPER" else "No"
         blocked = "No"
         blocked_by = ""
-
         if erf in dev_proxy_erfs:
             blocked = "Yes"
             blocked_by = "Developer"
         elif erf in owner_proxy_map:
             blocked = "Yes"
             blocked_by = f"Owner proxy holder: {owner_proxy_map[erf]}"
-
-        linked = primary_link_counts.get(erf, 0)
-
-        total_weight = 1 + numeric_proxies + linked if blocked == "No" else 0
-
+        if erf == "DEVELOPER":
+            total_weight = dev_total_weight if dev_active else 0
+            linked_for_primary = 0
+        else:
+            linked_for_primary = primary_link_counts.get(erf, 0)
+            if registered and blocked == "No":
+                total_weight = 1 + (numeric_proxies or 0) + linked_for_primary
+            else:
+                total_weight = 0
         running_total += total_weight
-
         writer.writerow([
-            erf, name, "Yes", numeric_proxies,
-            linked, total_weight,
-            "No", blocked, blocked_by
+            erf, name, registered, numeric_proxies,
+            linked_for_primary, total_weight,
+            is_dev, blocked, blocked_by,
         ])
 
-    # ===============================
-    # Developer (separate weighted voter)
-    # ===============================
-    if dev_active:
-        running_total += dev_total_weight
-
+    if not has_developer_owner:
+        dev_reg = regs_by_erf.get("DEVELOPER")
+        registered = "Yes" if dev_reg else "No"
+        dev_row_weight = dev_total_weight if dev_active else 0
+        running_total += dev_row_weight
         writer.writerow([
-            "DEVELOPER",
-            "",
-            "Yes",
-            proxy_count,
-            dev_linked_count,
-            dev_total_weight,
-            "Yes",
-            "No",
-            ""
+            "DEVELOPER", "", registered,
+            dev_reg["proxies"] if dev_reg else 0,
+            0, dev_row_weight, "Yes", "No", "",
         ])
 
-    # ===============================
-    # Totals
-    # ===============================
-    writer.writerow([])
     writer.writerow([
-        "TOTAL REGISTERED ERFs",
-        len(registered_erfs) + (1 if dev_active else 0)
-    ])
-    writer.writerow([
-        "TOTAL VOTE WEIGHT",
-        running_total
+        "TOTAL", "", "", "", "", running_total, "", "", "",
     ])
 
-    output = BytesIO()
-    output.write(text_buffer.getvalue().encode())
-    output.seek(0)
-
+    csv_bytes = text_buffer.getvalue().encode("utf-8")
+    bio = BytesIO(csv_bytes)
+    bio.seek(0)
     return send_file(
-        output,
+        bio,
         mimetype="text/csv",
         as_attachment=True,
-        download_name="hoa_registrations_quorum.csv"
+        download_name="hoa_registrations_quorum.csv",
     )
+
 
 @app.route("/admin/reset", methods=["GET", "POST"])
 def admin_reset():
     if not admin_logged_in():
         return redirect(url_for("admin_login"))
-
-    # 🔐 Always ensure this HOA has its schema
-    ensure_schema()
-
-    conn = get_db()
-    cur = conn.cursor()
-
     if request.method == "POST":
-        # Wipe ONLY this HOA database
-        cur.execute("DELETE FROM owners;")
-        cur.execute("DELETE FROM registrations;")
-        cur.execute("DELETE FROM owner_proxies;")
-        cur.execute("DELETE FROM topics;")
-        cur.execute("DELETE FROM options;")
-        cur.execute("DELETE FROM votes;")
-        cur.execute("DELETE FROM developer_proxies;")
+        if os.path.exists(DB_NAME):
+            os.remove(DB_NAME)
+        init_db()
+        flash("All data reset. You can start a new association/meeting.")
+        return redirect(url_for("admin_dashboard"))
+    template = BASE_HEAD_ADMIN + """
+<div class="card">
+  <h1>Reset All Data</h1>
+  <p><strong>Warning:</strong> This deletes all data (owners, registrations, topics, votes, proxies, developer info).</p>
+  <form method="post">
+    <button type="submit">Yes, reset everything</button>
+  </form>
+</div>
+""" + BASE_TAIL
+    return render_template_string(template)
 
-        # Reset developer settings safely
-        cur.execute("""
-            UPDATE developer_settings
-            SET is_active=0, base_votes=0, proxy_count=0, comment=NULL
-            WHERE id=1
-        """)
-
-        conn.commit()
-        conn.close()
-
-        return redirect("/admin")
-
-    return render_template_string("""
-    <div style="padding:30px">
-        <h2>Reset All HOA Data</h2>
-        <p><b>This will permanently erase all voting data for THIS HOA ONLY.</b></p>
-        <form method="post">
-            <button style="background:red;color:white;padding:10px">
-                RESET THIS HOA
-            </button>
-        </form>
-    </div>
-    """)
 
 # ---------- PUBLIC VOTING ----------
 
@@ -1560,17 +1307,6 @@ def vote_topic(topic_id):
         return redirect(url_for("vote_login"))
     conn = get_db()
     cur = conn.cursor()
-    # --- Phase 4.1: Topic locking ---
-    topic = cur.execute(
-        "SELECT is_open FROM topics WHERE id=?",
-        (topic_id,)
-    ).fetchone()
-
-    if not topic or topic["is_open"] == 0:
-        flash("This topic is closed.")
-        conn.close()
-        return redirect("/vote")
-
     topic = cur.execute("SELECT * FROM topics WHERE id=?;", (topic_id,)).fetchone()
     if not topic or not topic["is_open"]:
         conn.close()
@@ -1627,70 +1363,31 @@ def vote_topic(topic_id):
             linked_count = linked_count_row["c"] if linked_count_row else 0
             weight = 1 + (reg["proxies"] or 0) + linked_count
 
-        # --- cryptographic vote ledger ---
-        prev = cur.execute(
-            "SELECT vote_hash FROM votes WHERE topic_id=? ORDER BY id DESC LIMIT 1;",
-            (topic_id,)
-        ).fetchone()
-
-        prev_hash = prev["vote_hash"] if prev else "GENESIS"
-        timestamp = datetime.utcnow().isoformat()
-
-        vote_hash = compute_vote_hash(
-            prev_hash,
-            erf,
-            topic_id,
-            opt_id_int,
-            weight,
-            timestamp
+        cur.execute(
+            "INSERT INTO votes (topic_id, erf, option_id, weight) VALUES (?, ?, ?, ?);",
+            (topic_id, erf, opt_id_int, weight),
         )
-
-        cur.execute("""
-            INSERT INTO votes (
-                topic_id, erf, option_id, weight,
-                prev_hash, vote_hash, timestamp
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?);
-        """, (
-            topic_id,
-            erf,
-            opt_id_int,
-            weight,
-            prev_hash,
-            vote_hash,
-            timestamp
-        ))
-
         conn.commit()
         conn.close()
-
         template = BASE_HEAD_PUBLIC + "<div class='card'><h1>Thank you, your vote has been recorded.</h1></div>" + BASE_TAIL
         return render_template_string(template)
 
-    # ---------- GET request (show ballot) ----------
     conn.close()
     template = BASE_HEAD_PUBLIC + """
 <div class="card">
   <h1>Voting Ballot</h1>
-  <p>Logged in as ERF <strong>{{ erf }}</strong>. 
-     <a href="{{ url_for('vote_logout') }}">Logout</a></p>
+  <p>Logged in as ERF <strong>{{ erf }}</strong>. <a href="{{ url_for('vote_logout') }}">Logout</a></p>
   <h2>{{ topic['title'] }}</h2>
   <p>{{ topic['description'] }}</p>
   <form method="post">
     <h3>Options</h3>
     {% for o in options %}
-      <p>
-        <label>
-          <input type="radio" name="option_id" value="{{ o['id'] }}" required>
-          {{ o['label'] }}
-        </label>
-      </p>
+      <p><label><input type="radio" name="option_id" value="{{ o['id'] }}"> {{ o['label'] }}</label></p>
     {% endfor %}
     <button type="submit">Submit Vote</button>
   </form>
 </div>
 """ + BASE_TAIL
-
     return render_template_string(template, erf=erf, topic=topic, options=options)
 
 
@@ -1821,10 +1518,6 @@ def vote_quick():
     return redirect(url_for("vote_topic_selector"))
 
 
-import os
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
-
-
+    init_db()
+    app.run(host="0.0.0.0", port=5000, debug=False)
