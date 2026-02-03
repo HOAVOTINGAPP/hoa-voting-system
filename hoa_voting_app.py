@@ -1,5 +1,5 @@
-print("DATABASE_URL =", os.environ.get("DATABASE_URL"))
 import os
+print("DATABASE_URL =", os.environ.get("DATABASE_URL"))
 import csv
 import sqlite3
 import random
