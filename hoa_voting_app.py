@@ -1,3 +1,4 @@
+print("DATABASE_URL =", os.environ.get("DATABASE_URL"))
 import os
 import csv
 import sqlite3
