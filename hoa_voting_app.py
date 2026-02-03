@@ -1771,6 +1771,9 @@ BASE_TAIL = """
 </body>
 </html>
 """
+@app.route("/")
+def home():
+    return redirect("/admin")
 
 @app.route("/qr/<erf>")
 def qr_image(erf):
