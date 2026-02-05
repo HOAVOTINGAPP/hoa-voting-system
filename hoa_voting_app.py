@@ -1,195 +1,212 @@
 import os
 import csv
-import psycopg2
-from psycopg2.extras import RealDictCursor
 import random
 import string
-from io import StringIO, BytesIO
-from flask import Flask, request, redirect, url_for, render_template_string, send_file, flash, session
-import qrcode
 import hashlib
-from datetime import datetime
+from datetime import datetime, date
+from io import StringIO
 
-# ================================
-# SUPABASE DATABASE ACCESS LAYER
-# ================================
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from flask import (
+    Flask, request, redirect, url_for,
+    render_template_string, send_file,
+    flash, session, abort
+)
 
-def get_db():
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL not set")
-    conn = psycopg2.connect(
-        url,
-        sslmode="require",
-        cursor_factory=RealDictCursor
-    )
-    return conn
+# ======================================================
+# Configuration (Render + Supabase)
+# ======================================================
 
-def ensure_schema():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS owners (
-            id SERIAL PRIMARY KEY,
-            erf TEXT UNIQUE NOT NULL,
-            name TEXT,
-            id_number TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS registrations (
-            id SERIAL PRIMARY KEY,
-            erf TEXT UNIQUE NOT NULL,
-            proxies INTEGER DEFAULT 0,
-            otp TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS topics (
-            id SERIAL PRIMARY KEY,
-            title TEXT NOT NULL,
-            description TEXT,
-            is_open INTEGER DEFAULT 0
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS options (
-            id SERIAL PRIMARY KEY,
-            topic_id INTEGER NOT NULL,
-            label TEXT NOT NULL
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS votes (
-            id SERIAL PRIMARY KEY,
-            topic_id INTEGER,
-            erf TEXT,
-            option_id INTEGER,
-            weight INTEGER,
-            prev_hash TEXT,
-            vote_hash TEXT,
-            timestamp TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uniq_vote
-        ON votes(topic_id, erf);
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS developer_settings (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            is_active INTEGER DEFAULT 0,
-            base_votes INTEGER DEFAULT 0,
-            proxy_count INTEGER DEFAULT 0,
-            comment TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS developer_proxies (
-            id SERIAL PRIMARY KEY,
-            erf TEXT UNIQUE,
-            note TEXT
-        );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS owner_proxies (
-            id SERIAL PRIMARY KEY,
-            primary_erf TEXT,
-            proxy_erf TEXT UNIQUE
-        );
-    """)
-
-    cur.execute("""
-        INSERT INTO developer_settings (id)
-        VALUES (1)
-        ON CONFLICT DO NOTHING;
-    """)
-
-    conn.commit()
-    conn.close()
-
-# ================================
-# CRYPTOGRAPHIC VOTE LEDGER
-# ================================
-
-def compute_vote_hash(prev_hash, erf, topic_id, option_id, weight, timestamp):
-    payload = f"{prev_hash}|{erf}|{topic_id}|{option_id}|{weight}|{timestamp}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+DATABASE_URL = os.environ["DATABASE_URL"]
+SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret")
 
 app = Flask(__name__)
-app.secret_key = "change_this_secret"
-ADMIN_PASSWORD = "hoaadmin"
+app.secret_key = SECRET_KEY
 
-def verify_vote_chain():
-    conn = get_db()
+# ======================================================
+# DB helpers (NO GLOBAL CONNECTIONS)
+# ======================================================
+
+def get_conn():
+    return psycopg2.connect(
+        DATABASE_URL,
+        cursor_factory=RealDictCursor
+    )
+
+def set_search_path(cur, schema):
+    cur.execute(f"SET search_path TO {schema}, public;")
+
+# ======================================================
+# HOA context enforcement (CRITICAL)
+# ======================================================
+
+def require_hoa_schema():
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+    return schema
+
+# ======================================================
+# Utilities
+# ======================================================
+
+def generate_otp(length=6):
+    chars = string.ascii_uppercase + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
+
+GENESIS_HASH = "GENESIS"
+
+def compute_vote_hash(prev_hash, erf, topic_id, option_id, weight, ts):
+    payload = f"{prev_hash}|{erf}|{topic_id}|{option_id}|{weight}|{ts}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+# ======================================================
+# HOA + ADMIN AUTHENTICATION
+# ======================================================
+
+def resolve_admin(email, password):
+    """
+    Legacy-compatible admin auth:
+    - Plaintext password comparison
+    - HOA user must be enabled
+    - HOA must be enabled
+    - HOA subscription must not be expired
+    Returns schema_name on success, else None
+    """
+    conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-        SELECT prev_hash, erf, topic_id, option_id, weight, timestamp, vote_hash
-        FROM votes
-        ORDER BY id ASC
-    """)
-    rows = cur.fetchall()
+    cur.execute(
+        """
+        SELECT
+            u.password,
+            u.enabled        AS user_enabled,
+            h.schema_name,
+            h.enabled        AS hoa_enabled,
+            h.subscription_end
+        FROM public.hoa_users u
+        JOIN public.hoas h ON h.id = u.hoa_id
+        WHERE u.email = %s
+        """,
+        (email,)
+    )
 
-    last_hash = "GENESIS"
-
-    for r in rows:
-        expected = compute_vote_hash(
-            last_hash,
-            r["erf"],
-            r["topic_id"],
-            r["option_id"],
-            r["weight"],
-            r["timestamp"]
-        )
-
-        if expected != r["vote_hash"]:
-            conn.close()
-            return False
-
-        last_hash = r["vote_hash"]
-
+    row = cur.fetchone()
     conn.close()
-    return True
 
-# =================================================
-# AUTHENTICATION LAYER
-# =================================================
+    if not row:
+        return None
+
+    if not row["user_enabled"]:
+        return None
+
+    if not row["hoa_enabled"]:
+        return None
+
+    if row["subscription_end"] < date.today():
+        return None
+
+    # Legacy behaviour: plaintext comparison
+    if row["password"] != password:
+        return None
+
+    return row["schema_name"]
+
+# ======================================================
+# Layout Templates
+# ======================================================
+
+BASE_HEAD_ADMIN = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HOA AGM Admin</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f3f4f6; }
+.shell { max-width:1100px; margin:auto; padding:20px; }
+nav a { margin-right:12px; text-decoration:none; }
+.card { background:#fff; padding:16px; margin-bottom:16px; border-radius:8px; }
+table { border-collapse:collapse; width:100%; }
+th, td { border:1px solid #ddd; padding:6px; font-size:13px; }
+.bad { color:#b91c1c; font-weight:600; }
+.ok { color:#166534; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="shell">
+<nav>
+<a href="/admin">Dashboard</a>
+<a href="/admin/owners">Owners</a>
+<a href="/admin/owner_proxies">Owner Proxies</a>
+<a href="/admin/registrations">Registrations</a>
+<a href="/admin/topics">Topics</a>
+<a href="/admin/developer">Developer</a>
+<a href="/admin/export">Export</a>
+<a href="/admin/verify">Verify</a>
+<a href="/admin/reset">Reset</a>
+<a href="/admin/logout">Logout</a>
+</nav>
+"""
+
+BASE_HEAD_PUBLIC = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HOA Voting</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f3f4f6; }
+.shell { max-width:700px; margin:auto; padding:20px; }
+.card { background:#fff; padding:16px; margin-bottom:16px; border-radius:8px; }
+</style>
+</head>
+<body>
+<div class="shell">
+"""
+
+BASE_TAIL = "</div></body></html>"
+
+# ======================================================
+# Session Guards
+# ======================================================
 
 def require_admin():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-@app.route("/admin/login", methods=["GET","POST"])
+def require_voter():
+    if not session.get("voter_erf"):
+        return redirect("/vote/login")
+
+# ======================================================
+# Admin Login / Logout
+# ======================================================
+
+@app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     if request.method == "POST":
-        password = request.form.get("password","").strip()
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "").strip()
 
-        if password != ADMIN_PASSWORD:
-            return render_template_string("<h3>Invalid password</h3>")
+        schema = resolve_admin(email, password)
+        if not schema:
+            return render_template_string(
+                "<h3>Invalid credentials or HOA inactive</h3>"
+            )
 
         session.clear()
         session["admin_logged_in"] = True
-        ensure_schema()
+        session["hoa_schema"] = schema
+
         return redirect("/admin")
 
     return render_template_string("""
-    <html><body>
     <h2>Admin Login</h2>
     <form method="post">
-      <input type="password" name="password" placeholder="Admin Password"><br>
+      <p><input name="email" placeholder="Email"></p>
+      <p><input type="password" name="password" placeholder="Password"></p>
       <button>Login</button>
     </form>
-    </body></html>
     """)
 
 @app.route("/admin/logout")
@@ -197,383 +214,1219 @@ def admin_logout():
     session.clear()
     return redirect("/admin/login")
 
-
-def generate_otp(length=6):
-    chars = string.ascii_uppercase + string.digits
-    return "".join(random.choice(chars) for _ in range(length))
-
-
-def compute_grand_total(conn=None):
-    close_conn = False
-    if conn is None:
-        conn = get_db()
-        close_conn = True
-    cur = conn.cursor()
-
-    cur.execute("SELECT erf, proxies FROM registrations;")
-    regs_raw = cur.fetchall()
-
-    cur.execute("SELECT erf FROM developer_proxies;")
-    dev_proxy_erfs = {row["erf"] for row in cur.fetchall()}
-
-    cur.execute("SELECT primary_erf, proxy_erf FROM owner_proxies;")
-    owner_proxies_rows = cur.fetchall()
-    owner_proxy_map = {row["proxy_erf"]: row["primary_erf"] for row in owner_proxies_rows}
-    primary_link_counts = {}
-    for row in owner_proxies_rows:
-        primary = row["primary_erf"]
-        primary_link_counts[primary] = primary_link_counts.get(primary, 0) + 1
-
-    cur.execute("SELECT * FROM developer_settings WHERE id = 1;")
-    settings = cur.fetchone()
-
-    cur.execute("SELECT COUNT(*) AS c FROM developer_proxies;")
-    dev_linked_count_row = cur.fetchone()
-
-    if settings:
-        base_votes = settings["base_votes"] or 0
-        proxy_count = settings["proxy_count"] or 0
-        dev_linked_count = dev_linked_count_row["c"] if dev_linked_count_row else 0
-        dev_total_weight = base_votes + proxy_count + dev_linked_count
-        dev_active = settings["is_active"]
-    else:
-        dev_total_weight = 0
-        dev_active = 0
-
-    grand_total = 0
-    for r in regs_raw:
-        erf = r["erf"]
-        proxies = r["proxies"] or 0
-        if erf == "DEVELOPER":
-            weight = dev_total_weight if dev_active else 0
-        else:
-            blocked = (erf in dev_proxy_erfs) or (erf in owner_proxy_map)
-            if blocked:
-                weight = 0
-            else:
-                linked_count = primary_link_counts.get(erf, 0)
-                weight = 1 + proxies + linked_count
-        grand_total += weight
-
-    if close_conn:
-        conn.close()
-    return grand_total
-
-
-BASE_HEAD_ADMIN = """<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>HOA AGM Admin</title>
-  <style>
-    body { font-family: Arial, sans-serif; background:#f3f4f6; margin:0; }
-    .shell { max-width: 1100px; margin:0 auto; padding:20px; }
-    nav { background:#111827; color:white; padding:10px 14px; margin:-20px -20px 20px; }
-    nav a { color:#e5e7eb; margin-right:15px; text-decoration:none; font-size:14px; }
-    nav a:hover { text-decoration:underline; color:white; }
-    .card { background:white; padding:16px 20px; border-radius:10px; box-shadow:0 4px 12px rgba(0,0,0,0.08); margin-bottom:16px; }
-    h1 { margin-top:0; }
-    h3 { margin-bottom:4px; }
-    table { border-collapse:collapse; width:100%; margin-top:8px; }
-    th, td { border:1px solid #e5e7eb; padding:6px 8px; font-size:13px; text-align:left; }
-    th { background:#e5e7eb; }
-    input[type=text], input[type=number], input[type=password], input[type=file], textarea {
-        width:100%; max-width:360px; padding:6px 8px; border-radius:6px; border:1px solid #d1d5db;
-        font-family:inherit; font-size:14px;
-    }
-    button { background:#2563eb; color:white; border:none; border-radius:999px; padding:6px 14px; cursor:pointer; font-size:14px; }
-    button:hover { background:#1d4ed8; }
-    ul.messages { list-style:none; padding-left:0; }
-    ul.messages li { margin-bottom:4px; font-size:13px; }
-    .subtle { font-size:12px; color:#6b7280; }
-  </style>
-</head>
-<body>
-<div class="shell">
-<nav>
-  <a href="{{ url_for('admin_dashboard') }}">Dashboard</a>
-  <a href="{{ url_for('admin_owners') }}">Owners</a>
-  <a href="{{ url_for('admin_owner_proxies') }}">Owner Proxy Allocator</a>
-  <a href="{{ url_for('admin_registrations') }}">Registrations</a>
-  <a href="{{ url_for('admin_scan_register') }}">Scan ID</a>
-  <a href="{{ url_for('admin_topics') }}">Topics & Voting</a>
-  <a href="{{ url_for('admin_developer') }}">Developer</a>
-  <a href="{{ url_for('admin_export') }}">Export Results</a>
-  <a href="{{ url_for('admin_reset') }}">Reset All</a>
-  <a href="{{ url_for('admin_logout') }}">Logout</a>
-</nav>
-{% with messages = get_flashed_messages() %}
-  {% if messages %}
-    <ul class="messages">
-      {% for m in messages %}
-        <li>{{ m }}</li>
-      {% endfor %}
-    </ul>
-  {% endif %}
-{% endwith %}
-"""
-
-def admin_logged_in():
-    return session.get("admin_logged_in", False)
-
+# ======================================================
+# Admin Dashboard
+# ======================================================
 
 @app.route("/admin")
 def admin_dashboard():
-    if not admin_logged_in():
-        return redirect(url_for("admin_login"))
-    vote_url = url_for("vote_topic_selector", _external=True)
-    template = BASE_HEAD_ADMIN + """
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
 <div class="card">
-  <h1>HOA AGM Admin Dashboard</h1>
-  <p>Use the navigation above to manage the meeting.</p>
-  <p class="subtle">Voting link for owners (and developer): <code>{{ vote_url }}</code></p>
+  <h2>HOA AGM Admin Dashboard</h2>
+  <p>Public voting link:</p>
+  <code>{{ url_for('vote_login', _external=True) }}</code>
 </div>
 """ + BASE_TAIL
-    return render_template_string(template, vote_url=vote_url)
+    )
 
+# ======================================================
+# OWNERS (CSV UPLOAD / VIEW)
+# ======================================================
 
 @app.route("/admin/owners", methods=["GET", "POST"])
 def admin_owners():
-    if not admin_logged_in():
-        return redirect(url_for("admin_login"))
-    conn = get_db()
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
     cur = conn.cursor()
+    set_search_path(cur, schema)
+
     if request.method == "POST":
         file = request.files.get("file")
-        if not file or file.filename == "":
-            flash("Please choose a CSV file.")
-            conn.close()
-            return redirect(url_for("admin_owners"))
-        try:
-            stream = StringIO(file.stream.read().decode("utf-8"))
-            reader = csv.reader(stream)
-            count = 0
+        if file:
+            reader = csv.reader(StringIO(file.read().decode("utf-8")))
             for row in reader:
                 if not row:
                     continue
                 if row[0].strip().lower() == "erf":
                     continue
+
                 erf = row[0].strip().upper()
-                name = row[1].strip() if len(row) > 1 else ""
-                id_number = row[2].strip() if len(row) > 2 else ""
-                if not erf:
-                    continue
-                cur.execute("""
+                name = row[1].strip() if len(row) > 1 else None
+                id_number = row[2].strip() if len(row) > 2 else None
+
+                cur.execute(
+                    """
                     INSERT INTO owners (erf, name, id_number)
                     VALUES (%s, %s, %s)
-                    ON CONFLICT (erf) DO UPDATE
-                    SET name=EXCLUDED.name,
-                        id_number=EXCLUDED.id_number;
-                """, (erf, name, id_number))
-                count += 1
+                    ON CONFLICT (erf)
+                    DO UPDATE SET
+                        name = EXCLUDED.name,
+                        id_number = EXCLUDED.id_number
+                    """,
+                    (erf, name, id_number)
+                )
             conn.commit()
-            flash(f"Owners uploaded/updated: {count}")
-        except Exception as e:
-            flash(f"Error reading CSV: {e}")
-        conn.close()
-        return redirect(url_for("admin_owners"))
 
-    cur.execute("SELECT * FROM owners ORDER BY erf;")
-    owners = cur.fetchall()
+    owners = cur.execute(
+        "SELECT * FROM owners ORDER BY erf"
+    ).fetchall()
+
     conn.close()
-    template = BASE_HEAD_ADMIN + """
-<div class="card">
-  <h1>Owners</h1>
-  <h3>Upload Owners CSV</h3>
-  <form method="post" enctype="multipart/form-data">
-    <input type="file" name="file" accept=".csv">
-    <button type="submit">Upload</button>
-  </form>
-  <hr>
-  <table>
-    <tr><th>ERF</th><th>Name</th><th>ID</th></tr>
-    {% for o in owners %}
-      <tr>
-        <td>{{ o['erf'] }}</td>
-        <td>{{ o['name'] }}</td>
-        <td>{{ o['id_number'] }}</td>
-      </tr>
-    {% endfor %}
-  </table>
-</div>
-""" + BASE_TAIL
-    return render_template_string(template, owners=owners)
 
-
-@app.route("/admin/topics", methods=["GET", "POST"])
-def admin_topics():
-    if not admin_logged_in():
-        return redirect(url_for("admin_login"))
-    conn = get_db()
-    cur = conn.cursor()
-    if request.method == "POST":
-        title = request.form.get("title","").strip()
-        desc = request.form.get("description","").strip()
-        if title:
-            cur.execute(
-                "INSERT INTO topics (title, description, is_open) VALUES (%s,%s,0)",
-                (title, desc)
-            )
-            conn.commit()
-    cur.execute("SELECT * FROM topics ORDER BY id DESC;")
-    topics = cur.fetchall()
-    conn.close()
-    template = BASE_HEAD_ADMIN + """
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
 <div class="card">
-<h1>Topics</h1>
-<form method="post">
-<input name="title" placeholder="Title">
-<textarea name="description"></textarea>
-<button>Create</button>
+<h2>Owners</h2>
+<form method="post" enctype="multipart/form-data">
+  <input type="file" name="file">
+  <button>Upload CSV</button>
 </form>
 <table>
-<tr><th>ID</th><th>Title</th><th>Status</th><th>Toggle</th></tr>
-{% for t in topics %}
+<tr><th>ERF</th><th>Name</th><th>ID Number</th></tr>
+{% for o in owners %}
 <tr>
-<td>{{t['id']}}</td>
-<td>{{t['title']}}</td>
-<td>{{'Open' if t['is_open'] else 'Closed'}}</td>
-<td><a href="{{url_for('admin_toggle_topic',topic_id=t['id'])}}">Toggle</a></td>
+  <td>{{ o.erf }}</td>
+  <td>{{ o.name }}</td>
+  <td>{{ o.id_number }}</td>
 </tr>
 {% endfor %}
 </table>
 </div>
-""" + BASE_TAIL
-    return render_template_string(template, topics=topics)
+""" + BASE_TAIL,
+        owners=owners
+    )
 
+# ======================================================
+# REGISTRATIONS & OTP (NEGATIVE-GUARD FIXED)
+# ======================================================
 
-@app.route("/admin/topic/<int:topic_id>/toggle")
-def admin_toggle_topic(topic_id):
-    if not admin_logged_in():
-        return redirect(url_for("admin_login"))
-    conn = get_db()
+@app.route("/admin/registrations", methods=["GET", "POST"])
+def admin_registrations():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT is_open FROM topics WHERE id=%s", (topic_id,))
-    row = cur.fetchone()
-    new_state = 0 if row["is_open"] else 1
-    cur.execute("UPDATE topics SET is_open=%s WHERE id=%s", (new_state,topic_id))
-    conn.commit()
-    conn.close()
-    return redirect(url_for("admin_topics"))
-# ---------- PUBLIC VOTING ----------
+    set_search_path(cur, schema)
 
-@app.route("/vote/login", methods=["GET","POST"])
-def vote_login():
+    message = None
+
     if request.method == "POST":
-        erf = request.form.get("erf","").strip().upper()
-        otp = request.form.get("otp","").strip().upper()
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM registrations WHERE erf=%s",(erf,))
-        reg = cur.fetchone()
-        conn.close()
-        if not reg or reg["otp"] != otp:
-            flash("Invalid login")
-            return redirect(url_for("vote_login"))
-        session["voter_erf"] = erf
-        return redirect(url_for("vote_topic_selector"))
-    return render_template_string(BASE_HEAD_PUBLIC + """
-    <div class="card">
-    <h1>Voting Login</h1>
-    <form method="post">
-    <input name="erf" placeholder="ERF"><br>
-    <input name="otp" placeholder="OTP"><br>
-    <button>Login</button>
-    </form>
-    </div>
-    """ + BASE_TAIL)
+        erf = request.form.get("erf", "").strip().upper()
+        proxies_raw = request.form.get("proxies", "0")
+        try:
+            proxies = max(0, int(proxies_raw))
+        except ValueError:
+            proxies = 0
 
+        # ERF must exist in owners, except DEVELOPER
+        if erf != "DEVELOPER":
+            owner = cur.execute(
+                "SELECT 1 FROM owners WHERE erf=%s",
+                (erf,)
+            ).fetchone()
+            if not owner:
+                conn.close()
+                return render_template_string(
+                    BASE_HEAD_ADMIN + """
+<div class="card bad">
+ERF not found in owners list.
+</div>
+""" + BASE_TAIL
+                )
 
-@app.route("/vote")
-def vote_topic_selector():
-    erf = session.get("voter_erf")
-    if not erf:
-        return redirect(url_for("vote_login"))
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM topics WHERE is_open=1 ORDER BY id DESC")
-    topics = cur.fetchall()
+        otp = generate_otp()
+
+        cur.execute(
+            """
+            INSERT INTO registrations (erf, proxies, otp)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (erf)
+            DO UPDATE SET
+                proxies = EXCLUDED.proxies,
+                otp = EXCLUDED.otp
+            """,
+            (erf, proxies, otp)
+        )
+        conn.commit()
+        message = f"OTP for {erf}: {otp}"
+
+    rows = cur.execute(
+        "SELECT * FROM registrations ORDER BY erf"
+    ).fetchall()
+
     conn.close()
-    return render_template_string(BASE_HEAD_PUBLIC + """
-    <div class="card">
-    <h1>Select Topic</h1>
-    <ul>
-    {% for t in topics %}
-    <li><a href="{{url_for('vote_topic',topic_id=t['id'])}}">{{t['title']}}</a></li>
-    {% endfor %}
-    </ul>
-    </div>
-    """ + BASE_TAIL, topics=topics)
 
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Registrations</h2>
+{% if message %}
+<p class="ok">{{ message }}</p>
+{% endif %}
+<form method="post">
+  <input name="erf" placeholder="ERF">
+  <input type="number" name="proxies" value="0" min="0">
+  <button>Register</button>
+</form>
+<table>
+<tr><th>ERF</th><th>Numeric Proxies</th><th>OTP</th></tr>
+{% for r in rows %}
+<tr>
+  <td>{{ r.erf }}</td>
+  <td>{{ r.proxies }}</td>
+  <td>{{ r.otp }}</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+""" + BASE_TAIL,
+        rows=rows,
+        message=message
+    )
 
-@app.route("/vote/<int:topic_id>", methods=["GET","POST"])
-def vote_topic(topic_id):
-    erf = session.get("voter_erf")
-    if not erf:
-        return redirect(url_for("vote_login"))
+# ======================================================
+# PUBLIC VOTING — LOGIN / LOGOUT (HOA ENFORCED)
+# ======================================================
 
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM topics WHERE id=%s AND is_open=1",(topic_id,))
-    topic = cur.fetchone()
-    if not topic:
+@app.route("/vote/login", methods=["GET", "POST"])
+def vote_login():
+    schema = require_hoa_schema()
+
+    if request.method == "POST":
+        erf = request.form.get("erf", "").strip().upper()
+        otp = request.form.get("otp", "").strip()
+
+        conn = get_conn()
+        cur = conn.cursor()
+        set_search_path(cur, schema)
+
+        row = cur.execute(
+            """
+            SELECT * FROM registrations
+            WHERE erf=%s AND otp=%s
+            """,
+            (erf, otp)
+        ).fetchone()
+
         conn.close()
-        flash("Topic closed")
+
+        if not row:
+            return render_template_string(
+                BASE_HEAD_PUBLIC + """
+<div class="card bad">
+Invalid ERF or OTP
+</div>
+""" + BASE_TAIL
+            )
+
+        session["voter_erf"] = erf
         return redirect("/vote")
 
-    cur.execute("SELECT * FROM options WHERE topic_id=%s",(topic_id,))
-    options = cur.fetchall()
+    return render_template_string(
+        BASE_HEAD_PUBLIC + """
+<div class="card">
+<h2>Voting Login</h2>
+<form method="post">
+  <p><input name="erf" placeholder="ERF"></p>
+  <p><input name="otp" placeholder="OTP"></p>
+  <button>Login</button>
+</form>
+</div>
+""" + BASE_TAIL
+    )
 
-    if request.method=="POST":
-        option_id = int(request.form.get("option_id"))
-        cur.execute("SELECT * FROM registrations WHERE erf=%s",(erf,))
-        reg = cur.fetchone()
-        weight = 1 + (reg["proxies"] or 0)
+@app.route("/vote/logout")
+def vote_logout():
+    session.pop("voter_erf", None)
+    return redirect("/vote/login")
 
-        cur.execute("""
-        SELECT vote_hash FROM votes
-        WHERE topic_id=%s ORDER BY id DESC LIMIT 1
-        """,(topic_id,))
-        prev = cur.fetchone()
-        prev_hash = prev["vote_hash"] if prev else "GENESIS"
-        timestamp = datetime.utcnow().isoformat()
-        vote_hash = compute_vote_hash(prev_hash, erf, topic_id, option_id, weight, timestamp)
+# ======================================================
+# PUBLIC VOTING — TOPIC LIST
+# ======================================================
 
-        cur.execute("""
-        INSERT INTO votes
-        (topic_id,erf,option_id,weight,prev_hash,vote_hash,timestamp)
-        VALUES (%s,%s,%s,%s,%s,%s,%s)
-        """,(topic_id,erf,option_id,weight,prev_hash,vote_hash,timestamp))
+@app.route("/vote")
+def vote_index():
+    if not session.get("voter_erf"):
+        return redirect("/vote/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    topics = cur.execute(
+        """
+        SELECT * FROM topics
+        WHERE is_open = TRUE
+        ORDER BY id
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_PUBLIC + """
+<div class="card">
+<h2>Open Voting Topics</h2>
+<ul>
+{% for t in topics %}
+  <li>
+    <a href="/vote/{{ t.id }}">{{ t.title }}</a>
+  </li>
+{% endfor %}
+</ul>
+</div>
+""" + BASE_TAIL,
+        topics=topics
+    )
+
+# ======================================================
+# OWNER PROXY SYSTEM (ADD / DELETE)
+# ======================================================
+
+@app.route("/admin/owner_proxies", methods=["GET", "POST"])
+def admin_owner_proxies():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    error = None
+
+    if request.method == "POST":
+        primary = request.form.get("primary_erf", "").strip().upper()
+        proxy = request.form.get("proxy_erf", "").strip().upper()
+
+        if not primary or not proxy:
+            error = "Both ERFs are required"
+        elif primary == proxy:
+            error = "Cannot proxy an ERF to itself"
+        else:
+            # Both must exist as owners
+            p_owner = cur.execute(
+                "SELECT 1 FROM owners WHERE erf=%s",
+                (primary,)
+            ).fetchone()
+            x_owner = cur.execute(
+                "SELECT 1 FROM owners WHERE erf=%s",
+                (proxy,)
+            ).fetchone()
+
+            if not p_owner or not x_owner:
+                error = "Both ERFs must exist in owners"
+            else:
+                # Proxy ERF must not already be an owner proxy
+                already_proxy = cur.execute(
+                    "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
+                    (proxy,)
+                ).fetchone()
+
+                # Proxy ERF must not be a developer proxy
+                dev_proxy = cur.execute(
+                    "SELECT 1 FROM developer_proxies WHERE erf=%s",
+                    (proxy,)
+                ).fetchone()
+
+                # Proxy ERF must not have voted
+                voted = cur.execute(
+                    "SELECT 1 FROM votes WHERE erf=%s",
+                    (proxy,)
+                ).fetchone()
+
+                if already_proxy or dev_proxy or voted:
+                    error = "Proxy ERF is not eligible"
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO owner_proxies (primary_erf, proxy_erf)
+                        VALUES (%s, %s)
+                        """,
+                        (primary, proxy)
+                    )
+                    conn.commit()
+
+    proxies = cur.execute(
+        "SELECT * FROM owner_proxies ORDER BY primary_erf, proxy_erf"
+    ).fetchall()
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Owner Proxies</h2>
+{% if error %}
+<p class="bad">{{ error }}</p>
+{% endif %}
+<form method="post">
+  <input name="primary_erf" placeholder="Primary ERF">
+  <input name="proxy_erf" placeholder="Proxy ERF">
+  <button>Add Proxy</button>
+</form>
+
+<table>
+<tr><th>Primary ERF</th><th>Proxy ERF</th><th>Action</th></tr>
+{% for p in proxies %}
+<tr>
+  <td>{{ p.primary_erf }}</td>
+  <td>{{ p.proxy_erf }}</td>
+  <td>
+    <form method="post" action="/admin/owner_proxies/delete" style="display:inline">
+      <input type="hidden" name="primary" value="{{ p.primary_erf }}">
+      <input type="hidden" name="proxy" value="{{ p.proxy_erf }}">
+      <button>Delete</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+</table>
+</div>
+""" + BASE_TAIL,
+        proxies=proxies,
+        error=error
+    )
+
+@app.route("/admin/owner_proxies/delete", methods=["POST"])
+def admin_delete_owner_proxy():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    primary = request.form.get("primary")
+    proxy = request.form.get("proxy")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        """
+        DELETE FROM owner_proxies
+        WHERE primary_erf=%s AND proxy_erf=%s
+        """,
+        (primary, proxy)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/admin/owner_proxies")
+
+# ======================================================
+# DEVELOPER SYSTEM (SETTINGS + PROXIES)
+# ======================================================
+
+@app.route("/admin/developer", methods=["GET", "POST"])
+def admin_developer():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    settings = cur.execute(
+        "SELECT * FROM developer_settings WHERE id=1"
+    ).fetchone()
+
+    message = None
+    error = None
+
+    if request.method == "POST":
+        is_active = request.form.get("is_active") == "on"
+        base_votes = int(request.form.get("base_votes", "0") or 0)
+        proxy_count = int(request.form.get("proxy_count", "0") or 0)
+        comment = request.form.get("comment")
+
+        cur.execute(
+            """
+            UPDATE developer_settings
+            SET is_active=%s,
+                base_votes=%s,
+                proxy_count=%s,
+                comment=%s
+            WHERE id=1
+            """,
+            (is_active, base_votes, proxy_count, comment)
+        )
+
+        # Developer registration handling
+        if is_active:
+            otp = generate_otp()
+            cur.execute(
+                """
+                INSERT INTO registrations (erf, proxies, otp)
+                VALUES ('DEVELOPER', 0, %s)
+                ON CONFLICT (erf)
+                DO UPDATE SET otp=EXCLUDED.otp
+                """,
+                (otp,)
+            )
+            message = f"Developer OTP: {otp}"
+        else:
+            cur.execute(
+                "DELETE FROM registrations WHERE erf='DEVELOPER'"
+            )
+
+        conn.commit()
+
+        settings = cur.execute(
+            "SELECT * FROM developer_settings WHERE id=1"
+        ).fetchone()
+
+    dev_proxies = cur.execute(
+        "SELECT * FROM developer_proxies ORDER BY erf"
+    ).fetchall()
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Developer Settings</h2>
+{% if message %}
+<p class="ok">{{ message }}</p>
+{% endif %}
+{% if error %}
+<p class="bad">{{ error }}</p>
+{% endif %}
+<form method="post">
+  <label>
+    <input type="checkbox" name="is_active"
+      {% if settings.is_active %}checked{% endif %}>
+    Enable Developer Voting
+  </label><br><br>
+  Base Votes:
+  <input type="number" name="base_votes" value="{{ settings.base_votes }}"><br>
+  Proxy Count:
+  <input type="number" name="proxy_count" value="{{ settings.proxy_count }}"><br>
+  Comment:<br>
+  <textarea name="comment">{{ settings.comment }}</textarea><br>
+  <button>Save</button>
+</form>
+</div>
+
+<div class="card">
+<h3>Developer Proxies</h3>
+<form method="post" action="/admin/developer/add-proxy">
+  <input name="erf" placeholder="ERF">
+  <button>Add Developer Proxy</button>
+</form>
+<table>
+<tr><th>ERF</th></tr>
+{% for p in dev_proxies %}
+<tr><td>{{ p.erf }}</td></tr>
+{% endfor %}
+</table>
+</div>
+""" + BASE_TAIL,
+        settings=settings,
+        dev_proxies=dev_proxies,
+        message=message,
+        error=error
+    )
+
+@app.route("/admin/developer/add-proxy", methods=["POST"])
+def admin_add_developer_proxy():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    erf = request.form.get("erf", "").strip().upper()
+    if not erf:
+        return redirect("/admin/developer")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    # Must exist as owner
+    owner = cur.execute(
+        "SELECT 1 FROM owners WHERE erf=%s",
+        (erf,)
+    ).fetchone()
+
+    if not owner:
+        conn.close()
+        return redirect("/admin/developer")
+
+    # Must not be owner proxy
+    op = cur.execute(
+        "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
+        (erf,)
+    ).fetchone()
+    if op:
+        conn.close()
+        return redirect("/admin/developer")
+
+    # Must not have numeric proxies
+    reg = cur.execute(
+        "SELECT proxies FROM registrations WHERE erf=%s",
+        (erf,)
+    ).fetchone()
+    if reg and reg["proxies"] > 0:
+        conn.close()
+        return redirect("/admin/developer")
+
+    # Must not have voted
+    voted = cur.execute(
+        "SELECT 1 FROM votes WHERE erf=%s",
+        (erf,)
+    ).fetchone()
+    if voted:
+        conn.close()
+        return redirect("/admin/developer")
+
+    cur.execute(
+        """
+        INSERT INTO developer_proxies (erf)
+        VALUES (%s)
+        ON CONFLICT DO NOTHING
+        """,
+        (erf,)
+    )
+
+    conn.commit()
+    conn.close()
+    return redirect("/admin/developer")
+
+# ======================================================
+# VOTE WEIGHT COMPUTATION (LEGACY-CORRECT)
+# ======================================================
+
+def compute_vote_weight(cur, erf):
+    """
+    Computes total vote weight for an ERF according to legacy rules.
+    """
+    # Developer vote
+    if erf == "DEVELOPER":
+        settings = cur.execute(
+            "SELECT * FROM developer_settings WHERE id=1"
+        ).fetchone()
+        if not settings or not settings["is_active"]:
+            return 0
+
+        proxy_count = cur.execute(
+            "SELECT COUNT(*) AS c FROM developer_proxies"
+        ).fetchone()["c"]
+
+        return (
+            settings["base_votes"]
+            + settings["proxy_count"]
+            + proxy_count
+        )
+
+    # Developer proxies cannot vote
+    dev_proxy = cur.execute(
+        "SELECT 1 FROM developer_proxies WHERE erf=%s",
+        (erf,)
+    ).fetchone()
+    if dev_proxy:
+        return 0
+
+    # Owner proxies cannot vote
+    owner_proxy = cur.execute(
+        "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
+        (erf,)
+    ).fetchone()
+    if owner_proxy:
+        return 0
+
+    weight = 1
+
+    # Numeric proxies
+    reg = cur.execute(
+        "SELECT proxies FROM registrations WHERE erf=%s",
+        (erf,)
+    ).fetchone()
+    if reg:
+        weight += reg["proxies"]
+
+    # Incoming owner proxies
+    incoming = cur.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM owner_proxies
+        WHERE primary_erf=%s
+        """,
+        (erf,)
+    ).fetchone()
+
+    weight += incoming["c"]
+    return weight
+
+# ======================================================
+# TOPICS & OPTIONS (ADMIN)
+# ======================================================
+
+@app.route("/admin/topics", methods=["GET", "POST"])
+def admin_topics():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        description = request.form.get("description", "").strip()
+        if title:
+            cur.execute(
+                """
+                INSERT INTO topics (title, description, is_open)
+                VALUES (%s, %s, FALSE)
+                """,
+                (title, description)
+            )
+            conn.commit()
+
+    topics = cur.execute(
+        "SELECT * FROM topics ORDER BY id DESC"
+    ).fetchall()
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Topics</h2>
+<form method="post">
+  <p><input name="title" placeholder="Topic title"></p>
+  <p><textarea name="description" placeholder="Description"></textarea></p>
+  <button>Create Topic</button>
+</form>
+<table>
+<tr><th>Title</th><th>Status</th><th>Actions</th></tr>
+{% for t in topics %}
+<tr>
+  <td>{{ t.title }}</td>
+  <td>{{ "OPEN" if t.is_open else "CLOSED" }}</td>
+  <td>
+    <a href="/admin/topics/{{ t.id }}/options">Options</a> |
+    <a href="/admin/topics/{{ t.id }}/toggle">
+      {{ "Close" if t.is_open else "Open" }}
+    </a>
+  </td>
+</tr>
+{% endfor %}
+</table>
+</div>
+""" + BASE_TAIL,
+        topics=topics
+    )
+
+@app.route("/admin/topics/<int:topic_id>/toggle")
+def admin_toggle_topic(topic_id):
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        "UPDATE topics SET is_open = NOT is_open WHERE id=%s",
+        (topic_id,)
+    )
+    conn.commit()
+    conn.close()
+    return redirect("/admin/topics")
+
+@app.route("/admin/topics/<int:topic_id>/options", methods=["GET", "POST"])
+def admin_topic_options(topic_id):
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    topic = cur.execute(
+        "SELECT * FROM topics WHERE id=%s",
+        (topic_id,)
+    ).fetchone()
+
+    allow_add = not topic["is_open"]
+
+    if request.method == "POST" and allow_add:
+        label = request.form.get("label", "").strip()
+        if label:
+            cur.execute(
+                """
+                INSERT INTO options (topic_id, label)
+                VALUES (%s, %s)
+                """,
+                (topic_id, label)
+            )
+            conn.commit()
+
+    options = cur.execute(
+        "SELECT * FROM options WHERE topic_id=%s ORDER BY id",
+        (topic_id,)
+    ).fetchall()
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Options for: {{ topic.title }}</h2>
+{% if allow_add %}
+<form method="post">
+  <input name="label" placeholder="Option label">
+  <button>Add Option</button>
+</form>
+{% else %}
+<p class="bad">Voting is open. Options are locked.</p>
+{% endif %}
+<table>
+<tr><th>Option</th></tr>
+{% for o in options %}
+<tr><td>{{ o.label }}</td></tr>
+{% endfor %}
+</table>
+<a href="/admin/topics">Back</a>
+</div>
+""" + BASE_TAIL,
+        topic=topic,
+        options=options,
+        allow_add=allow_add
+    )
+
+# ======================================================
+# PUBLIC VOTING — CAST VOTE
+# ======================================================
+
+@app.route("/vote/<int:topic_id>", methods=["GET", "POST"])
+def vote_topic(topic_id):
+    if not session.get("voter_erf"):
+        return redirect("/vote/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    topic = cur.execute(
+        """
+        SELECT * FROM topics
+        WHERE id=%s AND is_open=TRUE
+        """,
+        (topic_id,)
+    ).fetchone()
+
+    if not topic:
+        conn.close()
+        abort(404)
+
+    erf = session["voter_erf"]
+
+    # Duplicate vote prevention (legacy behaviour)
+    already = cur.execute(
+        """
+        SELECT 1 FROM votes
+        WHERE topic_id=%s AND erf=%s
+        """,
+        (topic_id, erf)
+    ).fetchone()
+
+    if already:
+        conn.close()
+        return render_template_string(
+            BASE_HEAD_PUBLIC + """
+<div class="card bad">
+You have already voted on this topic.
+</div>
+""" + BASE_TAIL
+        )
+
+    weight = compute_vote_weight(cur, erf)
+    if weight <= 0:
+        conn.close()
+        return render_template_string(
+            BASE_HEAD_PUBLIC + """
+<div class="card bad">
+You are not eligible to vote.
+</div>
+""" + BASE_TAIL
+        )
+
+    options = cur.execute(
+        """
+        SELECT * FROM options
+        WHERE topic_id=%s
+        ORDER BY id
+        """,
+        (topic_id,)
+    ).fetchall()
+
+    if request.method == "POST":
+        option_id = request.form.get("option")
+        if not option_id:
+            conn.close()
+            return redirect(f"/vote/{topic_id}")
+
+        option_id = int(option_id)
+
+        # Hash chaining (global, deterministic)
+        last = cur.execute(
+            """
+            SELECT vote_hash
+            FROM votes
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        prev_hash = last["vote_hash"] if last else GENESIS_HASH
+        ts = datetime.utcnow().isoformat()
+
+        vote_hash = compute_vote_hash(
+            prev_hash,
+            erf,
+            topic_id,
+            option_id,
+            weight,
+            ts
+        )
+
+        cur.execute(
+            """
+            INSERT INTO votes
+                (topic_id, erf, option_id,
+                 weight, prev_hash, vote_hash, timestamp)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (topic_id, erf, option_id,
+             weight, prev_hash, vote_hash, ts)
+        )
 
         conn.commit()
         conn.close()
-        return render_template_string(BASE_HEAD_PUBLIC + "<h1>Vote recorded</h1>" + BASE_TAIL)
+        return redirect("/vote")
 
     conn.close()
-    return render_template_string(BASE_HEAD_PUBLIC + """
-    <div class="card">
-    <h1>{{topic['title']}}</h1>
-    <form method="post">
-    {% for o in options %}
-    <p><input type="radio" name="option_id" value="{{o['id']}}" required> {{o['label']}}</p>
-    {% endfor %}
-    <button>Submit</button>
-    </form>
-    </div>
-    """ + BASE_TAIL, topic=topic, options=options)
 
+    return render_template_string(
+        BASE_HEAD_PUBLIC + """
+<div class="card">
+<h2>{{ topic.title }}</h2>
+<form method="post">
+{% for o in options %}
+  <p>
+    <label>
+      <input type="radio" name="option" value="{{ o.id }}" required>
+      {{ o.label }}
+    </label>
+  </p>
+{% endfor %}
+<button>Submit Vote</button>
+</form>
+</div>
+""" + BASE_TAIL,
+        topic=topic,
+        options=options
+    )
 
-# ---------- VERIFY LEDGER ----------
+# ======================================================
+# VERIFY CRYPTOGRAPHIC VOTE LEDGER (ADMIN)
+# ======================================================
 
 @app.route("/admin/verify")
-def admin_verify_chain():
-    ok = verify_vote_chain()
-    return "VALID" if ok else "TAMPERED"
+def admin_verify():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
 
+    schema = require_hoa_schema()
 
-# ---------- START ----------
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
 
-import os
+    votes = cur.execute(
+        "SELECT * FROM votes ORDER BY id"
+    ).fetchall()
+
+    prev_hash = GENESIS_HASH
+    tampered = False
+
+    for v in votes:
+        expected = compute_vote_hash(
+            prev_hash,
+            v["erf"],
+            v["topic_id"],
+            v["option_id"],
+            v["weight"],
+            v["timestamp"]
+        )
+        if expected != v["vote_hash"]:
+            tampered = True
+            break
+        prev_hash = v["vote_hash"]
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Vote Ledger Verification</h2>
+{% if tampered %}
+<p class="bad">TAMPER DETECTED — vote chain is invalid.</p>
+{% else %}
+<p class="ok">OK — vote chain is intact.</p>
+{% endif %}
+</div>
+""" + BASE_TAIL,
+        tampered=tampered
+    )
+
+# ======================================================
+# EXPORTS (CSV)
+# ======================================================
+
+@app.route("/admin/export")
+def admin_export():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Exports</h2>
+<ul>
+  <li><a href="/admin/export/results">Voting Results</a></li>
+  <li><a href="/admin/export/developer">Developer Profile</a></li>
+  <li><a href="/admin/export/registrations">Registrations / Quorum</a></li>
+</ul>
+</div>
+""" + BASE_TAIL
+    )
+
+@app.route("/admin/export/results")
+def export_results():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    rows = cur.execute(
+        """
+        SELECT
+            t.title AS topic,
+            o.label AS option,
+            SUM(v.weight) AS total_votes
+        FROM votes v
+        JOIN topics t ON t.id = v.topic_id
+        JOIN options o ON o.id = v.option_id
+        GROUP BY t.title, o.label
+        ORDER BY t.title
+        """
+    ).fetchall()
+
+    conn.close()
+
+    out = StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["Topic", "Option", "Total Votes"])
+    for r in rows:
+        writer.writerow([r["topic"], r["option"], r["total_votes"]])
+
+    return send_file(
+        StringIO(out.getvalue()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="voting_results.csv"
+    )
+
+@app.route("/admin/export/developer")
+def export_developer():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    settings = cur.execute(
+        "SELECT * FROM developer_settings WHERE id=1"
+    ).fetchone()
+
+    proxies = cur.execute(
+        "SELECT erf FROM developer_proxies ORDER BY erf"
+    ).fetchall()
+
+    conn.close()
+
+    proxy_list = ",".join([p["erf"] for p in proxies])
+
+    total_weight = (
+        settings["base_votes"]
+        + settings["proxy_count"]
+        + len(proxies)
+        if settings["is_active"] else 0
+    )
+
+    out = StringIO()
+    writer = csv.writer(out)
+    writer.writerow([
+        "Base Votes",
+        "Configured Proxy Count",
+        "Actual Proxy ERFs",
+        "Total Weight",
+        "Comment"
+    ])
+    writer.writerow([
+        settings["base_votes"],
+        settings["proxy_count"],
+        proxy_list,
+        total_weight,
+        settings["comment"]
+    ])
+
+    return send_file(
+        StringIO(out.getvalue()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="developer_profile.csv"
+    )
+
+@app.route("/admin/export/registrations")
+def export_registrations():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    regs = cur.execute(
+        "SELECT erf, proxies FROM registrations ORDER BY erf"
+    ).fetchall()
+
+    out = StringIO()
+    writer = csv.writer(out)
+    writer.writerow([
+        "ERF",
+        "Numeric Proxies",
+        "Eligible",
+        "Effective Weight"
+    ])
+
+    for r in regs:
+        weight = compute_vote_weight(cur, r["erf"])
+        eligible = "Y" if weight > 0 else "N"
+        writer.writerow([
+            r["erf"],
+            r["proxies"],
+            eligible,
+            weight
+        ])
+
+    conn.close()
+
+    return send_file(
+        StringIO(out.getvalue()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="registrations_quorum.csv"
+    )
+
+# ======================================================
+# RESET HOA DATA (ADMIN ONLY)
+# ======================================================
+
+@app.route("/admin/reset", methods=["GET", "POST"])
+def admin_reset():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = require_hoa_schema()
+
+    if request.method == "POST":
+        conn = get_conn()
+        cur = conn.cursor()
+        set_search_path(cur, schema)
+
+        cur.execute("""
+            TRUNCATE
+                owners,
+                registrations,
+                owner_proxies,
+                developer_proxies,
+                topics,
+                options,
+                votes
+            RESTART IDENTITY
+        """)
+
+        cur.execute("""
+            UPDATE developer_settings
+            SET is_active=FALSE,
+                base_votes=0,
+                proxy_count=0,
+                comment=NULL
+            WHERE id=1
+        """)
+
+        conn.commit()
+        conn.close()
+        return redirect("/admin")
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card bad">
+<h2>RESET HOA DATA</h2>
+<p>This will permanently delete all HOA voting data.</p>
+<form method="post">
+  <button>Confirm Reset</button>
+</form>
+</div>
+""" + BASE_TAIL
+    )
+
+# ======================================================
+# RENDER / LOCAL STARTUP
+# ======================================================
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT",5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=False
+    )
