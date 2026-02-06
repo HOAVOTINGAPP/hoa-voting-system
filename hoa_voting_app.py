@@ -117,25 +117,95 @@ def resolve_admin(email, password):
 # Layout Templates
 # ======================================================
 
-BASE_HEAD_ADMIN = """<!doctype html>
+BASE_HEAD_ADMIN = """
+<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>HOA AGM Admin</title>
 <style>
-body { font-family: Arial, sans-serif; background:#f3f4f6; }
-.shell { max-width:1100px; margin:auto; padding:20px; }
-nav a { margin-right:12px; text-decoration:none; }
-.card { background:#fff; padding:16px; margin-bottom:16px; border-radius:8px; }
-table { border-collapse:collapse; width:100%; }
-th, td { border:1px solid #ddd; padding:6px; font-size:13px; }
-.bad { color:#b91c1c; font-weight:600; }
-.ok { color:#166534; font-weight:600; }
+
+body {
+    font-family: Arial, sans-serif;
+    background: #f4f6f8;
+    margin: 0;
+}
+
+.container {
+    max-width: 1100px;
+    margin: 30px auto;
+    padding: 0 10px;
+}
+
+.navbar {
+    background: #0f172a;
+    padding: 14px 20px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+}
+
+.navbar a {
+    color: white;
+    text-decoration: none;
+    margin-right: 20px;
+    font-weight: 500;
+}
+
+.navbar a:hover {
+    text-decoration: underline;
+}
+
+.card {
+    background: white;
+    padding: 22px;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.bad {
+    color: #dc2626;
+    font-weight: bold;
+}
+
+.ok {
+    color: #16a34a;
+    font-weight: bold;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+th, td {
+    padding: 10px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+}
+
+button, .btn {
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #2563eb;
+    color: white;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+}
+
+button:hover, .btn:hover {
+    background: #1d4ed8;
+}
+
 </style>
 </head>
 <body>
-<div class="shell">
-<nav>
+
+<div class="container">
+
+<div class="navbar">
 <a href="/admin">Dashboard</a>
 <a href="/admin/owners">Owners</a>
 <a href="/admin/owner_proxies">Owner Proxies</a>
@@ -146,25 +216,14 @@ th, td { border:1px solid #ddd; padding:6px; font-size:13px; }
 <a href="/admin/verify">Verify</a>
 <a href="/admin/reset">Reset</a>
 <a href="/admin/logout">Logout</a>
-</nav>
+</div>
 """
 
-BASE_HEAD_PUBLIC = """<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>HOA Voting</title>
-<style>
-body { font-family: Arial, sans-serif; background:#f3f4f6; }
-.shell { max-width:700px; margin:auto; padding:20px; }
-.card { background:#fff; padding:16px; margin-bottom:16px; border-radius:8px; }
-</style>
-</head>
-<body>
-<div class="shell">
+BASE_TAIL = """
+</div>
+</body>
+</html>
 """
-
-BASE_TAIL = "</div></body></html>"
 
 # ======================================================
 # Session Guards
