@@ -4,7 +4,7 @@ import random
 import string
 import hashlib
 from datetime import datetime, date
-from io import StringIO
+from io import StringIO, BytesIO
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -219,6 +219,8 @@ button:hover, .btn:hover {
 </div>
 """
 
+BASE_HEAD_PUBLIC = BASE_HEAD_ADMIN
+
 BASE_TAIL = """
 </div>
 </body>
@@ -284,7 +286,7 @@ def admin_dashboard():
 
     return render_template_string(
         BASE_HEAD_ADMIN + """
-<div class="card">
+        <div class="card">
   <h2>HOA AGM Admin Dashboard</h2>
   <p>Public voting link:</p>
   <code>{{ url_for('vote_login', _external=True) }}</code>
@@ -301,7 +303,9 @@ def admin_owners():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -334,15 +338,16 @@ def admin_owners():
                 )
             conn.commit()
 
-    owners = cur.execute(
+    cur.execute(
         "SELECT * FROM owners ORDER BY erf"
-    ).fetchall()
+    )
+    owners = cur.fetchall()
 
     conn.close()
 
     return render_template_string(
         BASE_HEAD_ADMIN + """
-<div class="card">
+        <div class="card">
 <h2>Owners</h2>
 <form method="post" enctype="multipart/form-data">
   <input type="file" name="file">
@@ -372,7 +377,9 @@ def admin_registrations():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -390,15 +397,17 @@ def admin_registrations():
 
         # ERF must exist in owners, except DEVELOPER
         if erf != "DEVELOPER":
-            owner = cur.execute(
+            cur.execute(
                 "SELECT 1 FROM owners WHERE erf=%s",
                 (erf,)
-            ).fetchone()
+            )
+            owner = cur.fetchone()
+
             if not owner:
                 conn.close()
                 return render_template_string(
                     BASE_HEAD_ADMIN + """
-<div class="card bad">
+                    <div class="card bad">
 ERF not found in owners list.
 </div>
 """ + BASE_TAIL
@@ -420,9 +429,10 @@ ERF not found in owners list.
         conn.commit()
         message = f"OTP for {erf}: {otp}"
 
-    rows = cur.execute(
+    cur.execute(
         "SELECT * FROM registrations ORDER BY erf"
-    ).fetchall()
+    )
+    rows = cur.fetchall()
 
     conn.close()
 
@@ -458,9 +468,35 @@ ERF not found in owners list.
 # PUBLIC VOTING — LOGIN / LOGOUT (HOA ENFORCED)
 # ======================================================
 
-@app.route("/vote/login", methods=["GET", "POST"])
-def vote_login():
-    schema = require_hoa_schema()
+@app.route("/vote/<hoa>/login", methods=["GET", "POST"])
+def vote_login(hoa):
+
+    schema = session.get("hoa_schema")
+
+    # If schema not already set, resolve first enabled HOA
+    if not schema:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT schema_name
+            FROM public.hoas
+            WHERE schema_name = %s
+            AND enabled = TRUE
+            """,
+            (hoa,)
+        )
+
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            abort(403)
+
+        schema = row["schema_name"]
+        session["hoa_schema"] = schema
+
 
     if request.method == "POST":
         erf = request.form.get("erf", "").strip().upper()
@@ -470,13 +506,14 @@ def vote_login():
         cur = conn.cursor()
         set_search_path(cur, schema)
 
-        row = cur.execute(
+        cur.execute(
             """
             SELECT * FROM registrations
             WHERE erf=%s AND otp=%s
             """,
             (erf, otp)
-        ).fetchone()
+        )
+        row = cur.fetchone()
 
         conn.close()
 
@@ -490,7 +527,8 @@ Invalid ERF or OTP
             )
 
         session["voter_erf"] = erf
-        return redirect("/vote")
+        session["hoa_schema"] = schema
+        return redirect(f"/vote/{hoa}")
 
     return render_template_string(
         BASE_HEAD_PUBLIC + """
@@ -505,7 +543,7 @@ Invalid ERF or OTP
 """ + BASE_TAIL
     )
 
-@app.route("/vote/logout")
+@app.route("/vote/<hoa>/logout")
 def vote_logout():
     session.pop("voter_erf", None)
     return redirect("/vote/login")
@@ -514,24 +552,27 @@ def vote_logout():
 # PUBLIC VOTING — TOPIC LIST
 # ======================================================
 
-@app.route("/vote")
-def vote_index():
+@app.route("/vote/<hoa>")
+def vote_index(hoa):
     if not session.get("voter_erf"):
         return redirect("/vote/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    topics = cur.execute(
+    cur.execute(
         """
         SELECT * FROM topics
         WHERE is_open = TRUE
         ORDER BY id
         """
-    ).fetchall()
+    )
+    topics = cur.fetchall()
 
     conn.close()
 
@@ -560,7 +601,9 @@ def admin_owner_proxies():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -578,35 +621,41 @@ def admin_owner_proxies():
             error = "Cannot proxy an ERF to itself"
         else:
             # Both must exist as owners
-            p_owner = cur.execute(
-                "SELECT 1 FROM owners WHERE erf=%s",
-                (primary,)
-            ).fetchone()
-            x_owner = cur.execute(
+            cur.execute(
                 "SELECT 1 FROM owners WHERE erf=%s",
                 (proxy,)
-            ).fetchone()
+            )
+            p_owner = cur.fetchone()
+            cur.execute(
+                "SELECT 1 FROM owners WHERE erf=%s",
+                (primary,)
+            )
+            x_owner = cur.fetchone()
 
             if not p_owner or not x_owner:
                 error = "Both ERFs must exist in owners"
             else:
                 # Proxy ERF must not already be an owner proxy
-                already_proxy = cur.execute(
+                cur.execute(
                     "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
-                    (proxy,)
-                ).fetchone()
+                     (proxy,)
+                )
+                already_proxy = cur.fetchone()
 
                 # Proxy ERF must not be a developer proxy
-                dev_proxy = cur.execute(
+                cur.execute(
                     "SELECT 1 FROM developer_proxies WHERE erf=%s",
                     (proxy,)
-                ).fetchone()
+                )
+                dev_proxy = cur.fetchone()
+
 
                 # Proxy ERF must not have voted
-                voted = cur.execute(
+                cur.execute(
                     "SELECT 1 FROM votes WHERE erf=%s",
                     (proxy,)
-                ).fetchone()
+                )
+                voted = cur.fetchone()
 
                 if already_proxy or dev_proxy or voted:
                     error = "Proxy ERF is not eligible"
@@ -620,9 +669,10 @@ def admin_owner_proxies():
                     )
                     conn.commit()
 
-    proxies = cur.execute(
-        "SELECT * FROM owner_proxies ORDER BY primary_erf, proxy_erf"
-    ).fetchall()
+    cur.execute(
+        "SELECT * FROM owner_proxies ORDER BY primary_erf"
+    )
+    proxies = cur.fetchall()
 
     conn.close()
 
@@ -666,7 +716,9 @@ def admin_delete_owner_proxy():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     primary = request.form.get("primary")
     proxy = request.form.get("proxy")
@@ -697,15 +749,18 @@ def admin_developer():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    settings = cur.execute(
-        "SELECT * FROM developer_settings WHERE id=1"
-    ).fetchone()
+    cur.execute(
+        "SELECT * FROM developer_settings LIMIT 1"
+    )
+    settings = cur.fetchone()
 
     message = None
     error = None
@@ -748,13 +803,15 @@ def admin_developer():
 
         conn.commit()
 
-        settings = cur.execute(
+        cur.execute(
             "SELECT * FROM developer_settings WHERE id=1"
-        ).fetchone()
+        )
+        settings = cur.fetchone()
 
-    dev_proxies = cur.execute(
+    cur.execute(
         "SELECT * FROM developer_proxies ORDER BY erf"
-    ).fetchall()
+    )
+    dev_proxies = cur.fetchall()
 
     conn.close()
 
@@ -809,7 +866,9 @@ def admin_add_developer_proxy():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     erf = request.form.get("erf", "").strip().upper()
     if not erf:
@@ -820,38 +879,42 @@ def admin_add_developer_proxy():
     set_search_path(cur, schema)
 
     # Must exist as owner
-    owner = cur.execute(
+    cur.execute(
         "SELECT 1 FROM owners WHERE erf=%s",
         (erf,)
-    ).fetchone()
+    )
+    owner = cur.fetchone()
 
     if not owner:
         conn.close()
         return redirect("/admin/developer")
 
     # Must not be owner proxy
-    op = cur.execute(
+    cur.execute(
         "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
         (erf,)
-    ).fetchone()
+    )
+    op = cur.fetchone()
     if op:
         conn.close()
         return redirect("/admin/developer")
 
     # Must not have numeric proxies
-    reg = cur.execute(
+    cur.execute(
         "SELECT proxies FROM registrations WHERE erf=%s",
         (erf,)
-    ).fetchone()
+    )
+    reg = cur.fetchone()
     if reg and reg["proxies"] > 0:
         conn.close()
         return redirect("/admin/developer")
 
     # Must not have voted
-    voted = cur.execute(
+    cur.execute(
         "SELECT 1 FROM votes WHERE erf=%s",
         (erf,)
-    ).fetchone()
+    )
+    voted = cur.fetchone()
     if voted:
         conn.close()
         return redirect("/admin/developer")
@@ -879,15 +942,17 @@ def compute_vote_weight(cur, erf):
     """
     # Developer vote
     if erf == "DEVELOPER":
-        settings = cur.execute(
-            "SELECT * FROM developer_settings WHERE id=1"
-        ).fetchone()
+        cur.execute(
+            "SELECT is_active, base_votes, proxy_count FROM developer_settings LIMIT 1"
+        )
+        settings = cur.fetchone()
         if not settings or not settings["is_active"]:
             return 0
 
-        proxy_count = cur.execute(
+        cur.execute(
             "SELECT COUNT(*) AS c FROM developer_proxies"
-        ).fetchone()["c"]
+        )
+        proxy_count = cur.fetchone()["c"]
 
         return (
             settings["base_votes"]
@@ -896,40 +961,44 @@ def compute_vote_weight(cur, erf):
         )
 
     # Developer proxies cannot vote
-    dev_proxy = cur.execute(
+    cur.execute(
         "SELECT 1 FROM developer_proxies WHERE erf=%s",
         (erf,)
-    ).fetchone()
+    )
+    dev_proxy = cur.fetchone()
     if dev_proxy:
         return 0
 
     # Owner proxies cannot vote
-    owner_proxy = cur.execute(
+    cur.execute(
         "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
         (erf,)
-    ).fetchone()
+    )
+    owner_proxy = cur.fetchone()
     if owner_proxy:
         return 0
 
     weight = 1
 
     # Numeric proxies
-    reg = cur.execute(
+    cur.execute(
         "SELECT proxies FROM registrations WHERE erf=%s",
         (erf,)
-    ).fetchone()
+    )
+    reg = cur.fetchone()
     if reg:
         weight += reg["proxies"]
 
     # Incoming owner proxies
-    incoming = cur.execute(
+    cur.execute(
         """
         SELECT COUNT(*) AS c
         FROM owner_proxies
         WHERE primary_erf=%s
         """,
         (erf,)
-    ).fetchone()
+    )
+    incoming = cur.fetchone()
 
     weight += incoming["c"]
     return weight
@@ -943,7 +1012,9 @@ def admin_topics():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -962,9 +1033,10 @@ def admin_topics():
             )
             conn.commit()
 
-    topics = cur.execute(
+    cur.execute(
         "SELECT * FROM topics ORDER BY id DESC"
-    ).fetchall()
+    )
+    topics = cur.fetchall()
 
     conn.close()
 
@@ -1002,7 +1074,9 @@ def admin_toggle_topic(topic_id):
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
@@ -1021,16 +1095,19 @@ def admin_topic_options(topic_id):
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    topic = cur.execute(
+    cur.execute(
         "SELECT * FROM topics WHERE id=%s",
         (topic_id,)
-    ).fetchone()
+    )
+    topic = cur.fetchone()
 
     allow_add = not topic["is_open"]
 
@@ -1046,10 +1123,11 @@ def admin_topic_options(topic_id):
             )
             conn.commit()
 
-    options = cur.execute(
+    cur.execute(
         "SELECT * FROM options WHERE topic_id=%s ORDER BY id",
         (topic_id,)
-    ).fetchall()
+    )
+    options = cur.fetchall()
 
     conn.close()
 
@@ -1088,19 +1166,22 @@ def vote_topic(topic_id):
     if not session.get("voter_erf"):
         return redirect("/vote/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    topic = cur.execute(
+    cur.execute(
         """
         SELECT * FROM topics
         WHERE id=%s AND is_open=TRUE
         """,
         (topic_id,)
-    ).fetchone()
+    )
+    topic = cur.fetchone()
 
     if not topic:
         conn.close()
@@ -1109,13 +1190,14 @@ def vote_topic(topic_id):
     erf = session["voter_erf"]
 
     # Duplicate vote prevention (legacy behaviour)
-    already = cur.execute(
+    cur.execute(
         """
         SELECT 1 FROM votes
         WHERE topic_id=%s AND erf=%s
         """,
         (topic_id, erf)
-    ).fetchone()
+    )
+    already = cur.fetchone()
 
     if already:
         conn.close()
@@ -1138,14 +1220,15 @@ You are not eligible to vote.
 """ + BASE_TAIL
         )
 
-    options = cur.execute(
+    cur.execute(
         """
         SELECT * FROM options
         WHERE topic_id=%s
         ORDER BY id
         """,
         (topic_id,)
-    ).fetchall()
+    )
+    options = cur.fetchall()
 
     if request.method == "POST":
         option_id = request.form.get("option")
@@ -1156,14 +1239,15 @@ You are not eligible to vote.
         option_id = int(option_id)
 
         # Hash chaining (global, deterministic)
-        last = cur.execute(
+        cur.execute(
             """
             SELECT vote_hash
             FROM votes
             ORDER BY id DESC
             LIMIT 1
             """
-        ).fetchone()
+        )
+        last = cur.fetchone()
 
         prev_hash = last["vote_hash"] if last else GENESIS_HASH
         ts = datetime.utcnow().isoformat()
@@ -1224,15 +1308,18 @@ def admin_verify():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    votes = cur.execute(
+    cur.execute(
         "SELECT * FROM votes ORDER BY id"
-    ).fetchall()
+    )
+    votes = cur.fetchall()
 
     prev_hash = GENESIS_HASH
     tampered = False
@@ -1294,13 +1381,15 @@ def export_results():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    rows = cur.execute(
+    cur.execute(
         """
         SELECT
             t.title AS topic,
@@ -1312,7 +1401,8 @@ def export_results():
         GROUP BY t.title, o.label
         ORDER BY t.title
         """
-    ).fetchall()
+    )
+    rows = cur.fetchall()
 
     conn.close()
 
@@ -1323,7 +1413,7 @@ def export_results():
         writer.writerow([r["topic"], r["option"], r["total_votes"]])
 
     return send_file(
-        StringIO(out.getvalue()),
+        BytesIO(out.getvalue().encode()),
         mimetype="text/csv",
         as_attachment=True,
         download_name="voting_results.csv"
@@ -1334,19 +1424,23 @@ def export_developer():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    settings = cur.execute(
+    cur.execute(
         "SELECT * FROM developer_settings WHERE id=1"
-    ).fetchone()
+    )
+    settings = cur.fetchone()
 
-    proxies = cur.execute(
+    cur.execute(
         "SELECT erf FROM developer_proxies ORDER BY erf"
-    ).fetchall()
+    )
+    proxies = cur.fetchall()
 
     conn.close()
 
@@ -1377,7 +1471,7 @@ def export_developer():
     ])
 
     return send_file(
-        StringIO(out.getvalue()),
+        BytesIO(out.getvalue().encode()),
         mimetype="text/csv",
         as_attachment=True,
         download_name="developer_profile.csv"
@@ -1388,15 +1482,18 @@ def export_registrations():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     conn = get_conn()
     cur = conn.cursor()
     set_search_path(cur, schema)
 
-    regs = cur.execute(
+    cur.execute(
         "SELECT erf, proxies FROM registrations ORDER BY erf"
-    ).fetchall()
+    )
+    regs = cur.fetchall()
 
     out = StringIO()
     writer = csv.writer(out)
@@ -1420,7 +1517,7 @@ def export_registrations():
     conn.close()
 
     return send_file(
-        StringIO(out.getvalue()),
+        BytesIO(out.getvalue().encode()),
         mimetype="text/csv",
         as_attachment=True,
         download_name="registrations_quorum.csv"
@@ -1435,7 +1532,9 @@ def admin_reset():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-    schema = require_hoa_schema()
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
 
     if request.method == "POST":
         conn = get_conn()
