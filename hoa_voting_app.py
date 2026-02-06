@@ -235,9 +235,9 @@ def require_admin():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
-def require_voter():
+def require_voter(hoa):
     if not session.get("voter_erf"):
-        return redirect("/vote/login")
+        return redirect(f"/vote/{hoa}/login")
 
 # ======================================================
 # Admin Login / Logout
@@ -289,7 +289,7 @@ def admin_dashboard():
         <div class="card">
   <h2>HOA AGM Admin Dashboard</h2>
   <p>Public voting link:</p>
-  <code>{{ url_for('vote_login', _external=True) }}</code>
+  <code>{{ url_for('vote_login', hoa=session['hoa_schema'], _external=True) }}</code>
 </div>
 """ + BASE_TAIL
     )
@@ -544,9 +544,9 @@ Invalid ERF or OTP
     )
 
 @app.route("/vote/<hoa>/logout")
-def vote_logout():
+def vote_logout(hoa):
     session.pop("voter_erf", None)
-    return redirect("/vote/login")
+    return redirect(f"/vote/{hoa}/login")
 
 # ======================================================
 # PUBLIC VOTING — TOPIC LIST
@@ -555,7 +555,7 @@ def vote_logout():
 @app.route("/vote/<hoa>")
 def vote_index(hoa):
     if not session.get("voter_erf"):
-        return redirect("/vote/login")
+        return redirect(f"/vote/{hoa}/login")
 
     schema = session.get("hoa_schema")
     if not schema:
@@ -583,13 +583,14 @@ def vote_index(hoa):
 <ul>
 {% for t in topics %}
   <li>
-    <a href="/vote/{{ t.id }}">{{ t.title }}</a>
+    <a href="/vote/{{ hoa }}/{{ t.id }}">{{ t.title }}</a>
   </li>
 {% endfor %}
 </ul>
 </div>
 """ + BASE_TAIL,
-        topics=topics
+        topics=topics,
+        hoa=hoa
     )
 
 # ======================================================
@@ -1066,7 +1067,7 @@ def admin_topics():
 </table>
 </div>
 """ + BASE_TAIL,
-        topics=topics
+        topics=topics,
     )
 
 @app.route("/admin/topics/<int:topic_id>/toggle")
@@ -1161,10 +1162,10 @@ def admin_topic_options(topic_id):
 # PUBLIC VOTING — CAST VOTE
 # ======================================================
 
-@app.route("/vote/<int:topic_id>", methods=["GET", "POST"])
-def vote_topic(topic_id):
+@app.route("/vote/<hoa>/<int:topic_id>", methods=["GET", "POST"])
+def vote_topic(hoa, topic_id):
     if not session.get("voter_erf"):
-        return redirect("/vote/login")
+        return redirect(f"/vote/{hoa}/login")
 
     schema = session.get("hoa_schema")
     if not schema:
@@ -1234,7 +1235,7 @@ You are not eligible to vote.
         option_id = request.form.get("option")
         if not option_id:
             conn.close()
-            return redirect(f"/vote/{topic_id}")
+            return redirect(f"/vote/{hoa}/{topic_id}")
 
         option_id = int(option_id)
 
@@ -1274,7 +1275,7 @@ You are not eligible to vote.
 
         conn.commit()
         conn.close()
-        return redirect("/vote")
+        return redirect(f"/vote/{hoa}")
 
     conn.close()
 
