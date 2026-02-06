@@ -548,6 +548,36 @@ def vote_logout(hoa):
     session.pop("voter_erf", None)
     return redirect(f"/vote/{hoa}/login")
 
+
+# ======================================================
+# PUBLIC VOTING — ROOT REDIRECT
+# ======================================================
+
+@app.route("/vote")
+def vote_redirect():
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT schema_name
+        FROM public.hoas
+        WHERE enabled = TRUE
+        ORDER BY id
+        LIMIT 1
+        """
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        abort(404)
+
+    return redirect(f"/vote/{row['schema_name']}/login")
+
+
 # ======================================================
 # PUBLIC VOTING — TOPIC LIST
 # ======================================================
