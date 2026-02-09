@@ -219,7 +219,75 @@ button:hover, .btn:hover {
 </div>
 """
 
-BASE_HEAD_PUBLIC = BASE_HEAD_ADMIN
+BASE_HEAD_PUBLIC = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HOA AGM Voting Portal</title>
+<style>
+
+body {
+    font-family: Arial, sans-serif;
+    background: #f4f6f8;
+    margin: 0;
+}
+
+.container {
+    max-width: 700px;
+    margin: 30px auto;
+    padding: 0 10px;
+}
+
+.card {
+    background: white;
+    padding: 22px;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.bad {
+    color: #dc2626;
+    font-weight: bold;
+}
+
+.ok {
+    color: #16a34a;
+    font-weight: bold;
+}
+
+button, .btn {
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #2563eb;
+    color: white;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+}
+
+button:hover, .btn:hover {
+    background: #1d4ed8;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 10px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+}
+
+</style>
+</head>
+<body>
+
+<div class="container">
+"""
 
 BASE_TAIL = """
 </div>
