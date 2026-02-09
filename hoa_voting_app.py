@@ -61,6 +61,28 @@ def compute_vote_hash(prev_hash, erf, topic_id, option_id, weight, ts):
     payload = f"{prev_hash}|{erf}|{topic_id}|{option_id}|{weight}|{ts}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+def get_hoa_branding(schema):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            name,
+            portal_title,
+            brand_color,
+            logo_url
+        FROM public.hoas
+        WHERE schema_name=%s
+        """,
+        (schema,)
+    )
+
+    branding = cur.fetchone()
+    conn.close()
+    return branding
+
 # ======================================================
 # HOA + ADMIN AUTHENTICATION
 # ======================================================
@@ -205,6 +227,16 @@ button:hover, .btn:hover {
 
 <div class="container">
 
+{% if branding %}
+<div class="card" style="border-top:6px solid {{ branding.brand_color }}">
+<h2>{{ branding.portal_title or branding.name }}</h2>
+
+{% if branding.logo_url %}
+<img src="{{ branding.logo_url }}" style="max-height:80px">
+{% endif %}
+</div>
+{% endif %}
+
 <div class="navbar">
 <a href="/admin">Dashboard</a>
 <a href="/admin/owners">Owners</a>
@@ -287,6 +319,16 @@ th, td {
 <body>
 
 <div class="container">
+
+{% if branding %}
+<div class="card" style="border-top:6px solid {{ branding.brand_color }}">
+<h2>{{ branding.portal_title or branding.name }}</h2>
+
+{% if branding.logo_url %}
+<img src="{{ branding.logo_url }}" style="max-height:80px">
+{% endif %}
+</div>
+{% endif %}
 """
 
 BASE_TAIL = """
@@ -352,14 +394,18 @@ def admin_dashboard():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
+    schema = session.get("hoa_schema")
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
-        <div class="card">
-  <h2>HOA AGM Admin Dashboard</h2>
-  <p>Public voting link:</p>
-  <code>{{ url_for('vote_login', hoa=session['hoa_schema'], _external=True) }}</code>
+<div class="card">
+<h2>{{ branding.portal_title or branding.name }} — Admin Dashboard</h2>
+<p>Public voting link:</p>
+<code>{{ url_for('vote_login', hoa=session['hoa_schema'], _external=True) }}</code>
 </div>
-""" + BASE_TAIL
+""" + BASE_TAIL,
+        branding=branding
     )
 
 # ======================================================
@@ -413,6 +459,8 @@ def admin_owners():
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
         <div class="card">
@@ -433,7 +481,8 @@ def admin_owners():
 </table>
 </div>
 """ + BASE_TAIL,
-        owners=owners
+        owners=owners,
+        branding=branding
     )
 
 # ======================================================
@@ -504,6 +553,8 @@ ERF not found in owners list.
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
@@ -529,7 +580,8 @@ ERF not found in owners list.
 </div>
 """ + BASE_TAIL,
         rows=rows,
-        message=message
+        message=message,
+        branding=branding
     )
 
 # ======================================================
@@ -539,34 +591,30 @@ ERF not found in owners list.
 @app.route("/vote/<hoa>/login", methods=["GET", "POST"])
 def vote_login(hoa):
 
-    schema = session.get("hoa_schema")
+    conn = get_conn()
+    cur = conn.cursor()
 
-    # If schema not already set, resolve first enabled HOA
-    if not schema:
-        conn = get_conn()
-        cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT schema_name
+        FROM public.hoas
+        WHERE schema_name = %s
+        AND enabled = TRUE
+        """,
+        (hoa,)
+    )
 
-        cur.execute(
-            """
-            SELECT schema_name
-            FROM public.hoas
-            WHERE schema_name = %s
-            AND enabled = TRUE
-            """,
-            (hoa,)
-        )
+    row = cur.fetchone()
+    conn.close()
 
-        row = cur.fetchone()
-        conn.close()
+    if not row:
+        abort(403)
 
-        if not row:
-            abort(403)
-
-        schema = row["schema_name"]
-        session["hoa_schema"] = schema
-
+    schema = row["schema_name"]
+    session["hoa_schema"] = schema
 
     if request.method == "POST":
+
         erf = request.form.get("erf", "").strip().upper()
         otp = request.form.get("otp", "").strip()
 
@@ -581,22 +629,27 @@ def vote_login(hoa):
             """,
             (erf, otp)
         )
-        row = cur.fetchone()
 
+        row = cur.fetchone()
         conn.close()
 
         if not row:
+            branding = get_hoa_branding(schema)
+
             return render_template_string(
                 BASE_HEAD_PUBLIC + """
 <div class="card bad">
 Invalid ERF or OTP
 </div>
-""" + BASE_TAIL
+""" + BASE_TAIL,
+                branding=branding
             )
 
         session["voter_erf"] = erf
         session["hoa_schema"] = schema
         return redirect(f"/vote/{hoa}")
+
+    branding = get_hoa_branding(schema)
 
     return render_template_string(
         BASE_HEAD_PUBLIC + """
@@ -608,7 +661,8 @@ Invalid ERF or OTP
   <button>Login</button>
 </form>
 </div>
-""" + BASE_TAIL
+""" + BASE_TAIL,
+        branding=branding
     )
 
 @app.route("/vote/<hoa>/logout")
@@ -664,7 +718,8 @@ Open Voting Portal
 </table>
 </div>
 """ + BASE_TAIL,
-        hoas=hoas
+        hoas=hoas,
+        branding=None
     )
 
 # ======================================================
@@ -677,6 +732,9 @@ def vote_index(hoa):
         return redirect(f"/vote/{hoa}/login")
 
     schema = session.get("hoa_schema")
+    if schema != hoa:
+        return redirect(f"/vote/{hoa}/login")
+
     if not schema:
         abort(403)
 
@@ -695,10 +753,12 @@ def vote_index(hoa):
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_PUBLIC + """
-<div class="card">
-<h2>Open Voting Topics</h2>
+    <div class="card">
+    <h2>Open Voting Topics</h2>
 <ul>
 {% for t in topics %}
   <li>
@@ -709,7 +769,8 @@ def vote_index(hoa):
 </div>
 """ + BASE_TAIL,
         topics=topics,
-        hoa=hoa
+        hoa=hoa,
+        branding=branding
     )
 
 # ======================================================
@@ -796,6 +857,8 @@ def admin_owner_proxies():
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
@@ -828,7 +891,8 @@ def admin_owner_proxies():
 </div>
 """ + BASE_TAIL,
         proxies=proxies,
-        error=error
+        error=error,
+        branding=branding
     )
 
 @app.route("/admin/owner_proxies/delete", methods=["POST"])
@@ -935,6 +999,8 @@ def admin_developer():
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
@@ -978,7 +1044,8 @@ def admin_developer():
         settings=settings,
         dev_proxies=dev_proxies,
         message=message,
-        error=error
+        error=error,
+        branding=branding
     )
 
 @app.route("/admin/developer/add-proxy", methods=["POST"])
@@ -1160,6 +1227,8 @@ def admin_topics():
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
@@ -1187,6 +1256,7 @@ def admin_topics():
 </div>
 """ + BASE_TAIL,
         topics=topics,
+        branding=branding,
     )
 
 @app.route("/admin/topics/<int:topic_id>/toggle")
@@ -1251,6 +1321,8 @@ def admin_topic_options(topic_id):
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
@@ -1274,7 +1346,8 @@ def admin_topic_options(topic_id):
 """ + BASE_TAIL,
         topic=topic,
         options=options,
-        allow_add=allow_add
+        allow_add=allow_add,
+        branding=branding
     )
 
 # ======================================================
@@ -1287,6 +1360,9 @@ def vote_topic(hoa, topic_id):
         return redirect(f"/vote/{hoa}/login")
 
     schema = session.get("hoa_schema")
+    if schema != hoa:
+        return redirect(f"/vote/{hoa}/login")
+
     if not schema:
         abort(403)
 
@@ -1321,23 +1397,31 @@ def vote_topic(hoa, topic_id):
 
     if already:
         conn.close()
+
+        branding = get_hoa_branding(schema)
+
         return render_template_string(
             BASE_HEAD_PUBLIC + """
-<div class="card bad">
-You have already voted on this topic.
-</div>
-""" + BASE_TAIL
+        <div class="card bad">
+        You have already voted on this topic.
+        </div>
+        """ + BASE_TAIL,
+            branding=branding
         )
 
     weight = compute_vote_weight(cur, erf)
     if weight <= 0:
         conn.close()
+
+        branding = get_hoa_branding(schema)
+
         return render_template_string(
             BASE_HEAD_PUBLIC + """
-<div class="card bad">
-You are not eligible to vote.
-</div>
-""" + BASE_TAIL
+        <div class="card bad">
+        You are not eligible to vote.
+        </div>
+        """ + BASE_TAIL,
+            branding=branding
         )
 
     cur.execute(
@@ -1398,6 +1482,8 @@ You are not eligible to vote.
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_PUBLIC + """
 <div class="card">
@@ -1416,7 +1502,8 @@ You are not eligible to vote.
 </div>
 """ + BASE_TAIL,
         topic=topic,
-        options=options
+        options=options,
+        branding=branding
     )
 
 # ======================================================
@@ -1460,6 +1547,8 @@ def admin_verify():
 
     conn.close()
 
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
@@ -1471,7 +1560,8 @@ def admin_verify():
 {% endif %}
 </div>
 """ + BASE_TAIL,
-        tampered=tampered
+        tampered=tampered,
+        branding=branding
     )
 
 # ======================================================
@@ -1483,6 +1573,9 @@ def admin_export():
     if not session.get("admin_logged_in"):
         return redirect("/admin/login")
 
+    schema = session.get("hoa_schema")
+    branding = get_hoa_branding(schema)
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
@@ -1493,7 +1586,8 @@ def admin_export():
   <li><a href="/admin/export/registrations">Registrations / Quorum</a></li>
 </ul>
 </div>
-""" + BASE_TAIL
+""" + BASE_TAIL,
+        branding=branding
     )
 
 @app.route("/admin/export/results")
@@ -1686,6 +1780,7 @@ def admin_reset():
         conn.close()
         return redirect("/admin")
 
+    branding = get_hoa_branding(schema)
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card bad">
@@ -1695,8 +1790,9 @@ def admin_reset():
   <button>Confirm Reset</button>
 </form>
 </div>
-""" + BASE_TAIL
-    )
+""" + BASE_TAIL,
+branding=branding
+)
 
 # ======================================================
 # RENDER / LOCAL STARTUP
