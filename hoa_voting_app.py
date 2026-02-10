@@ -519,7 +519,6 @@ def admin_registrations():
                 (erf,)
             )
             owner = cur.fetchone()
-
             if not owner:
                 conn.close()
                 return render_template_string(
@@ -841,6 +840,7 @@ def admin_owner_proxies():
                 if already_proxy or dev_proxy or voted:
                     error = "Proxy ERF is not eligible"
                 else:
+                    # STEP 1 — Insert proxy relationship
                     cur.execute(
                         """
                         INSERT INTO owner_proxies (primary_erf, proxy_erf)
@@ -848,6 +848,53 @@ def admin_owner_proxies():
                         """,
                         (primary, proxy)
                     )
+
+                    # STEP 2 — Ensure primary ERF has registration record
+                    cur.execute(
+                        """
+                        SELECT 1 FROM registrations
+                        WHERE erf=%s
+                        """,
+                        (primary,)
+                    )
+
+                    primary_registered = cur.fetchone()
+
+                    if not primary_registered:
+
+                        otp = generate_otp()
+
+                        cur.execute(
+                            """
+                            INSERT INTO registrations (erf, proxies, otp)
+                            VALUES (%s, 0, %s)
+                            """,
+                            (primary, otp)
+                        )
+
+                    # STEP 3 — Remove registration of proxy ERF if exists
+                    cur.execute(
+                        """
+                        DELETE FROM registrations
+                        WHERE erf=%s
+                        """,
+                        (proxy,)
+                    )
+
+                    # STEP 4 — Synchronize numeric proxy count for primary ERF
+                    cur.execute(
+                        """
+                        UPDATE registrations
+                        SET proxies = (
+                            SELECT COUNT(*)
+                            FROM owner_proxies
+                            WHERE primary_erf=%s
+                        )
+                        WHERE erf=%s
+                        """,
+                        (primary, primary)
+                    )
+
                     conn.commit()
 
     cur.execute(
@@ -917,6 +964,19 @@ def admin_delete_owner_proxy():
         WHERE primary_erf=%s AND proxy_erf=%s
         """,
         (primary, proxy)
+    )
+
+    cur.execute(
+        """
+        UPDATE registrations
+        SET proxies = (
+            SELECT COUNT(*)
+            FROM owner_proxies
+            WHERE primary_erf=%s
+        )
+        WHERE erf=%s
+        """,
+        (primary, primary)
     )
 
     conn.commit()
