@@ -849,50 +849,14 @@ def admin_owner_proxies():
                         (primary, proxy)
                     )
 
-                    # STEP 2 — Ensure primary ERF has registration record
-                    cur.execute(
-                        """
-                        SELECT 1 FROM registrations
-                        WHERE erf=%s
-                        """,
-                        (primary,)
-                    )
 
-                    primary_registered = cur.fetchone()
-
-                    if not primary_registered:
-
-                        otp = generate_otp()
-
-                        cur.execute(
-                            """
-                            INSERT INTO registrations (erf, proxies, otp)
-                            VALUES (%s, 0, %s)
-                            """,
-                            (primary, otp)
-                        )
-
-                    # STEP 3 — Remove registration of proxy ERF if exists
+                    # STEP 2 — Remove registration of proxy ERF if exists
                     cur.execute(
                         """
                         DELETE FROM registrations
                         WHERE erf=%s
                         """,
                         (proxy,)
-                    )
-
-                    # STEP 4 — Synchronize numeric proxy count for primary ERF
-                    cur.execute(
-                        """
-                        UPDATE registrations
-                        SET proxies = (
-                            SELECT COUNT(*)
-                            FROM owner_proxies
-                            WHERE primary_erf=%s
-                        )
-                        WHERE erf=%s
-                        """,
-                        (primary, primary)
                     )
 
                     conn.commit()
@@ -1771,6 +1735,7 @@ def export_registrations():
 
     out = StringIO()
     writer = csv.writer(out)
+
     writer.writerow([
         "ERF",
         "Numeric Proxies",
@@ -1778,15 +1743,27 @@ def export_registrations():
         "Effective Weight"
     ])
 
+    total_weight = 0
+
     for r in regs:
+
+        numeric = r["proxies"] or 0
+
         weight = compute_vote_weight(cur, r["erf"])
+
         eligible = "Y" if weight > 0 else "N"
+
+        total_weight += weight
+
         writer.writerow([
             r["erf"],
-            r["proxies"],
+            numeric,
             eligible,
             weight
         ])
+
+    writer.writerow([])
+    writer.writerow(["TOTAL", "", "", total_weight])
 
     conn.close()
 
