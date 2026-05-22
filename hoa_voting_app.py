@@ -996,6 +996,21 @@ def admin_developer():
     )
     settings = cur.fetchone()
 
+    if not settings:
+        cur.execute(
+            """
+           INSERT INTO developer_settings
+            (id, is_active, base_votes, proxy_count, comment)
+            VALUES (1, FALSE, 0, 0, NULL)
+            """
+        )
+        conn.commit()
+
+        cur.execute(
+            "SELECT * FROM developer_settings WHERE id=1"
+        )
+        settings = cur.fetchone()
+
     message = None
     error = None
 
