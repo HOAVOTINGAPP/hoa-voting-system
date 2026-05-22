@@ -1130,7 +1130,99 @@ def admin_developer():
         error=error,
         branding=branding
     )
+    
+@app.route("/admin/developer/add-proxy", methods=["GET", "POST"])
+def admin_add_developer_proxy():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
 
+    if request.method == "GET":
+        return redirect("/admin/developer")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    erf = request.form.get("erf", "").strip().upper()
+    if not erf:
+        return redirect("/admin/developer")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    # Must exist as owner
+    cur.execute(
+        "SELECT 1 FROM owners WHERE erf=%s",
+        (erf,)
+    )
+    owner = cur.fetchone()
+
+    if not owner:
+        conn.close()
+        return redirect("/admin/developer")
+
+    # Must not be owner proxy
+    cur.execute(
+        "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
+        (erf,)
+    )
+    op = cur.fetchone()
+    if op:
+        conn.close()
+        return redirect("/admin/developer")
+
+    # Must not have voted
+    cur.execute(
+        "SELECT 1 FROM votes WHERE erf=%s",
+        (erf,)
+    )
+    voted = cur.fetchone()
+    if voted:
+        conn.close()
+        return redirect("/admin/developer")
+
+    cur.execute(
+        """
+        INSERT INTO developer_proxies (erf)
+        VALUES (%s)
+        ON CONFLICT DO NOTHING
+        """,
+        (erf,)
+    )
+
+    # Count proxies
+    cur.execute(
+        "SELECT COUNT(*) AS proxy_count FROM developer_proxies"
+    )
+    proxy_row = cur.fetchone()
+    proxy_count = proxy_row["proxy_count"] if proxy_row else 0
+
+    # Update developer settings
+    cur.execute(
+        """
+        UPDATE developer_settings
+        SET proxy_count=%s
+        WHERE id=1
+        """,
+        (proxy_count,)
+    )
+
+    # Update DEVELOPER registration if exists
+    cur.execute(
+        """
+        UPDATE registrations
+        SET proxies=%s
+        WHERE erf='DEVELOPER'
+        """,
+        (proxy_count,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/admin/developer")
+    
 # ======================================================
 # VOTE WEIGHT COMPUTATION (LEGACY-CORRECT)
 # ======================================================
