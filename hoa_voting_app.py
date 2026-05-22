@@ -1722,7 +1722,7 @@ def export_results():
     conn.close()
 
     out = StringIO()
-    writer = csv.writer(out)
+    writer = csv.writer(out, delimiter=';')
     writer.writerow(["Topic", "Option", "Total Votes"])
     for r in rows:
         writer.writerow([r["topic"], r["option"], r["total_votes"]])
@@ -1769,7 +1769,7 @@ def export_developer():
     )
 
     out = StringIO()
-    writer = csv.writer(out)
+    writer = csv.writer(out, delimiter=';')
     writer.writerow([
         "Base Votes",
         "Configured Proxy Count",
@@ -1811,7 +1811,7 @@ def export_registrations():
     regs = cur.fetchall()
 
     out = StringIO()
-    writer = csv.writer(out)
+    writer = csv.writer(out, delimiter=';')
 
     writer.writerow([
         "ERF",
