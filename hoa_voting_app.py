@@ -1270,27 +1270,16 @@ def compute_vote_weight(cur, erf):
 
     weight = 1
 
-    # Numeric proxies
+       # Numeric proxies (already includes owner proxies)
     cur.execute(
         "SELECT proxies FROM registrations WHERE erf=%s",
         (erf,)
     )
     reg = cur.fetchone()
+
     if reg:
         weight += reg["proxies"]
 
-    # Incoming owner proxies
-    cur.execute(
-        """
-        SELECT COUNT(*) AS c
-        FROM owner_proxies
-        WHERE primary_erf=%s
-        """,
-        (erf,)
-    )
-    incoming = cur.fetchone()
-
-    weight += incoming["c"]
     return weight
 
 # ======================================================
@@ -1635,23 +1624,30 @@ def admin_verify():
     tampered = False
 
     for v in votes:
+        ts = v["timestamp"]
+
+        if hasattr(ts, "isoformat"):
+            ts = ts.isoformat()
+
         expected = compute_vote_hash(
             prev_hash,
             v["erf"],
             v["topic_id"],
             v["option_id"],
             v["weight"],
-            v["timestamp"]
+            ts
         )
+
         if expected != v["vote_hash"]:
             tampered = True
             break
+
         prev_hash = v["vote_hash"]
 
     conn.close()
 
     branding = get_hoa_branding(schema)
-
+    
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
