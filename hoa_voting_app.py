@@ -1626,8 +1626,11 @@ def admin_verify():
     for v in votes:
         ts = v["timestamp"]
 
-        if hasattr(ts, "isoformat"):
-            ts = ts.isoformat()
+        # Force exact same string format used during vote creation
+        if isinstance(ts, str):
+            hash_ts = ts.replace(" ", "T")
+        else:
+            hash_ts = ts.isoformat()
 
         expected = compute_vote_hash(
             prev_hash,
@@ -1635,7 +1638,7 @@ def admin_verify():
             v["topic_id"],
             v["option_id"],
             v["weight"],
-            ts
+            hash_ts
         )
 
         if expected != v["vote_hash"]:
@@ -1647,7 +1650,7 @@ def admin_verify():
     conn.close()
 
     branding = get_hoa_branding(schema)
-    
+
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
