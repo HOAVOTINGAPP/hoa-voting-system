@@ -531,7 +531,14 @@ ERF not found in owners list.
         )
         proxy_given = cur.fetchone()
 
-        if proxy_given:
+        # BLOCK if ERF is a developer proxy
+        cur.execute(
+            "SELECT 1 FROM developer_proxies WHERE erf=%s",
+            (erf,)
+        )
+        dev_proxy = cur.fetchone()
+
+        if proxy_given or dev_proxy:
             conn.close()
             return render_template_string(
                 BASE_HEAD_ADMIN + """
