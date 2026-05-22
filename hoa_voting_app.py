@@ -506,11 +506,6 @@ def admin_registrations():
 
     if request.method == "POST":
         erf = request.form.get("erf", "").strip().upper()
-        proxies_raw = request.form.get("proxies", "0")
-        try:
-            proxies = max(0, int(proxies_raw))
-        except ValueError:
-            proxies = 0
 
         # ERF must exist in owners, except DEVELOPER
         if erf != "DEVELOPER":
@@ -528,6 +523,31 @@ ERF not found in owners list.
 </div>
 """ + BASE_TAIL
                 )
+
+        # BLOCK if ERF has given proxy to someone else
+        cur.execute(
+            "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
+            (erf,)
+        )
+        proxy_given = cur.fetchone()
+
+        if proxy_given:
+            conn.close()
+            return render_template_string(
+                BASE_HEAD_ADMIN + """
+                <div class="card bad">
+This ERF has given its proxy and cannot register.
+</div>
+""" + BASE_TAIL
+            )
+
+        # Count proxies automatically
+        cur.execute(
+            "SELECT COUNT(*) AS proxy_count FROM owner_proxies WHERE primary_erf=%s",
+            (erf,)
+        )
+        proxy_row = cur.fetchone()
+        proxies = proxy_row["proxy_count"] if proxy_row else 0
 
         otp = generate_otp()
 
@@ -563,7 +583,6 @@ ERF not found in owners list.
 {% endif %}
 <form method="post">
   <input name="erf" placeholder="ERF">
-  <input type="number" name="proxies" value="0" min="0">
   <button>Register</button>
 </form>
 <table>
