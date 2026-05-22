@@ -556,16 +556,6 @@ This ERF has given its proxy and cannot register.
         proxy_row = cur.fetchone()
         proxy_count = proxy_row["proxy_count"] if proxy_row else 0
 
-        # Update developer settings proxy count
-        cur.execute(
-            """
-            UPDATE developer_settings
-            SET proxy_count=%s
-            WHERE id=1
-            """,
-            (proxy_count,)
-        )
-
         otp = generate_otp()
 
         cur.execute(
@@ -577,7 +567,7 @@ This ERF has given its proxy and cannot register.
                 proxies = EXCLUDED.proxies,
                 otp = EXCLUDED.otp
             """,
-            (erf, proxies, otp)
+            (erf, proxy_count, otp)
         )
         conn.commit()
         message = f"OTP for {erf}: {otp}"
