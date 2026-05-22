@@ -1546,7 +1546,7 @@ def vote_topic(hoa, topic_id):
         last = cur.fetchone()
 
         prev_hash = last["vote_hash"] if last else GENESIS_HASH
-        ts = datetime.utcnow().isoformat()
+        ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")
 
         vote_hash = compute_vote_hash(
             prev_hash,
@@ -1626,11 +1626,10 @@ def admin_verify():
     for v in votes:
         ts = v["timestamp"]
 
-        # Force exact same string format used during vote creation
         if isinstance(ts, str):
-            hash_ts = ts.replace(" ", "T")
+            hash_ts = ts
         else:
-            hash_ts = ts.isoformat()
+            hash_ts = ts.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
         expected = compute_vote_hash(
             prev_hash,
