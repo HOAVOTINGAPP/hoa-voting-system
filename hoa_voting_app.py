@@ -560,7 +560,7 @@ This ERF has given its proxy and cannot register.
 
         cur.execute(
             """
-            INSERT INTO registrations (erf, proxies, otp)
+            INSERT INTO registrations (erf, proxy_count, otp)
             VALUES (%s, %s, %s)
             ON CONFLICT (erf)
             DO UPDATE SET
@@ -1028,7 +1028,7 @@ def admin_developer():
 
             cur.execute(
                 """
-                INSERT INTO registrations (erf, proxies, otp)
+                INSERT INTO registrations (erf, proxy_count, otp)
                 VALUES ('DEVELOPER', %s, %s)
                 ON CONFLICT (erf)
                 DO UPDATE SET
