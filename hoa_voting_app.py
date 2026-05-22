@@ -554,7 +554,17 @@ This ERF has given its proxy and cannot register.
             (erf,)
         )
         proxy_row = cur.fetchone()
-        proxies = proxy_row["proxy_count"] if proxy_row else 0
+        proxy_count = proxy_row["proxy_count"] if proxy_row else 0
+
+        # Update developer settings proxy count
+        cur.execute(
+            """
+            UPDATE developer_settings
+            SET proxy_count=%s
+            WHERE id=1
+            """,
+            (proxy_count,)
+        )
 
         otp = generate_otp()
 
@@ -1002,7 +1012,6 @@ def admin_developer():
     if request.method == "POST":
         is_active = request.form.get("is_active") == "on"
         base_votes = int(request.form.get("base_votes", "0") or 0)
-        proxy_count = int(request.form.get("proxy_count", "0") or 0)
         comment = request.form.get("comment")
 
         cur.execute(
@@ -1010,26 +1019,37 @@ def admin_developer():
             UPDATE developer_settings
             SET is_active=%s,
                 base_votes=%s,
-                proxy_count=%s,
                 comment=%s
             WHERE id=1
             """,
-            (is_active, base_votes, proxy_count, comment)
+            (is_active, base_votes, comment)
         )
-
+        
         # Developer registration handling
         if is_active:
+            # Count developer proxies automatically
+            cur.execute(
+                "SELECT COUNT(*) AS proxy_count FROM developer_proxies"
+            )
+            proxy_row = cur.fetchone()
+            proxy_count = proxy_row["proxy_count"] if proxy_row else 0
+
             otp = generate_otp()
+
             cur.execute(
                 """
                 INSERT INTO registrations (erf, proxies, otp)
-                VALUES ('DEVELOPER', 0, %s)
+                VALUES ('DEVELOPER', %s, %s)
                 ON CONFLICT (erf)
-                DO UPDATE SET otp=EXCLUDED.otp
+                DO UPDATE SET
+                    proxies=EXCLUDED.proxies,
+                    otp=EXCLUDED.otp
                 """,
-                (otp,)
+                (proxy_count, otp)
             )
+
             message = f"Developer OTP: {otp}"
+
         else:
             cur.execute(
                 "DELETE FROM registrations WHERE erf='DEVELOPER'"
@@ -1070,7 +1090,7 @@ def admin_developer():
   Base Votes:
   <input type="number" name="base_votes" value="{{ settings.base_votes }}"><br>
   Proxy Count:
-  <input type="number" name="proxy_count" value="{{ settings.proxy_count }}"><br>
+  <input type="number" value="{{ settings.proxy_count }}" readonly><br>
   Comment:<br>
   <textarea name="comment">{{ settings.comment }}</textarea><br>
   <button>Save</button>
@@ -1163,6 +1183,33 @@ def admin_add_developer_proxy():
         ON CONFLICT DO NOTHING
         """,
         (erf,)
+    )
+
+    # Update developer proxy count
+    cur.execute(
+        "SELECT COUNT(*) AS proxy_count FROM developer_proxies"
+    )
+    proxy_row = cur.fetchone()
+    proxy_count = proxy_row["proxy_count"] if proxy_row else 0
+
+    # Update developer settings
+    cur.execute(
+        """
+        UPDATE developer_settings
+        SET proxy_count=%s
+        WHERE id=1
+        """,
+        (proxy_count,)
+    )
+
+    # Update DEVELOPER registration
+    cur.execute(
+        """
+        UPDATE registrations
+        SET proxies=%s
+        WHERE erf='DEVELOPER'
+        """,
+        (proxy_count,)
     )
 
     conn.commit()
