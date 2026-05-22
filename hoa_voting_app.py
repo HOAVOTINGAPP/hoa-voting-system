@@ -518,7 +518,7 @@ def admin_registrations():
                 conn.close()
                 return render_template_string(
                     BASE_HEAD_ADMIN + """
-                    <div class="card bad">
+<div class="card bad">
 ERF not found in owners list.
 </div>
 """ + BASE_TAIL
@@ -542,13 +542,13 @@ ERF not found in owners list.
             conn.close()
             return render_template_string(
                 BASE_HEAD_ADMIN + """
-                <div class="card bad">
+<div class="card bad">
 This ERF has given its proxy and cannot register.
 </div>
 """ + BASE_TAIL
             )
 
-        # Count proxies automatically
+        # Count owner proxies automatically
         cur.execute(
             "SELECT COUNT(*) AS proxy_count FROM owner_proxies WHERE primary_erf=%s",
             (erf,)
@@ -560,7 +560,7 @@ This ERF has given its proxy and cannot register.
 
         cur.execute(
             """
-            INSERT INTO registrations (erf, proxy_count, otp)
+            INSERT INTO registrations (erf, proxies, otp)
             VALUES (%s, %s, %s)
             ON CONFLICT (erf)
             DO UPDATE SET
@@ -569,6 +569,7 @@ This ERF has given its proxy and cannot register.
             """,
             (erf, proxy_count, otp)
         )
+
         conn.commit()
         message = f"OTP for {erf}: {otp}"
 
@@ -991,15 +992,16 @@ def admin_developer():
     cur = conn.cursor()
     set_search_path(cur, schema)
 
+    # Ensure settings row exists
     cur.execute(
-        "SELECT * FROM developer_settings LIMIT 1"
+        "SELECT * FROM developer_settings WHERE id=1"
     )
     settings = cur.fetchone()
 
     if not settings:
         cur.execute(
             """
-           INSERT INTO developer_settings
+            INSERT INTO developer_settings
             (id, is_active, base_votes, proxy_count, comment)
             VALUES (1, FALSE, 0, 0, NULL)
             """
@@ -1019,36 +1021,37 @@ def admin_developer():
         base_votes = int(request.form.get("base_votes", "0") or 0)
         comment = request.form.get("comment")
 
+        # Count proxies first
+        cur.execute(
+            "SELECT COUNT(*) AS proxy_count FROM developer_proxies"
+        )
+        proxy_row = cur.fetchone()
+        proxy_count = proxy_row["proxy_count"] if proxy_row else 0
+
+        # Update settings
         cur.execute(
             """
             UPDATE developer_settings
             SET is_active=%s,
                 base_votes=%s,
+                proxy_count=%s,
                 comment=%s
             WHERE id=1
             """,
-            (is_active, base_votes, comment)
+            (is_active, base_votes, proxy_count, comment)
         )
-        
-        # Developer registration handling
-        if is_active:
-            # Count developer proxies automatically
-            cur.execute(
-                "SELECT COUNT(*) AS proxy_count FROM developer_proxies"
-            )
-            proxy_row = cur.fetchone()
-            proxy_count = proxy_row["proxy_count"] if proxy_row else 0
 
+        if is_active:
             otp = generate_otp()
 
             cur.execute(
                 """
-                INSERT INTO registrations (erf, proxy_count, otp)
+                INSERT INTO registrations (erf, proxies, otp)
                 VALUES ('DEVELOPER', %s, %s)
                 ON CONFLICT (erf)
                 DO UPDATE SET
-                    proxies=EXCLUDED.proxies,
-                    otp=EXCLUDED.otp
+                    proxies = EXCLUDED.proxies,
+                    otp = EXCLUDED.otp
                 """,
                 (proxy_count, otp)
             )
@@ -1092,12 +1095,16 @@ def admin_developer():
       {% if settings.is_active %}checked{% endif %}>
     Enable Developer Voting
   </label><br><br>
+
   Base Votes:
   <input type="number" name="base_votes" value="{{ settings.base_votes }}"><br>
+
   Proxy Count:
   <input type="number" value="{{ settings.proxy_count }}" readonly><br>
+
   Comment:<br>
   <textarea name="comment">{{ settings.comment }}</textarea><br>
+
   <button>Save</button>
 </form>
 </div>
@@ -1108,6 +1115,7 @@ def admin_developer():
   <input name="erf" placeholder="ERF">
   <button>Add Developer Proxy</button>
 </form>
+
 <table>
 <tr><th>ERF</th></tr>
 {% for p in dev_proxies %}
@@ -1122,104 +1130,6 @@ def admin_developer():
         error=error,
         branding=branding
     )
-
-@app.route("/admin/developer/add-proxy", methods=["POST"])
-def admin_add_developer_proxy():
-    if not session.get("admin_logged_in"):
-        return redirect("/admin/login")
-
-    schema = session.get("hoa_schema")
-    if not schema:
-        abort(403)
-
-    erf = request.form.get("erf", "").strip().upper()
-    if not erf:
-        return redirect("/admin/developer")
-
-    conn = get_conn()
-    cur = conn.cursor()
-    set_search_path(cur, schema)
-
-    # Must exist as owner
-    cur.execute(
-        "SELECT 1 FROM owners WHERE erf=%s",
-        (erf,)
-    )
-    owner = cur.fetchone()
-
-    if not owner:
-        conn.close()
-        return redirect("/admin/developer")
-
-    # Must not be owner proxy
-    cur.execute(
-        "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
-        (erf,)
-    )
-    op = cur.fetchone()
-    if op:
-        conn.close()
-        return redirect("/admin/developer")
-
-    # Must not have numeric proxies
-    cur.execute(
-        "SELECT proxies FROM registrations WHERE erf=%s",
-        (erf,)
-    )
-    reg = cur.fetchone()
-    if reg and reg["proxies"] > 0:
-        conn.close()
-        return redirect("/admin/developer")
-
-    # Must not have voted
-    cur.execute(
-        "SELECT 1 FROM votes WHERE erf=%s",
-        (erf,)
-    )
-    voted = cur.fetchone()
-    if voted:
-        conn.close()
-        return redirect("/admin/developer")
-
-    cur.execute(
-        """
-        INSERT INTO developer_proxies (erf)
-        VALUES (%s)
-        ON CONFLICT DO NOTHING
-        """,
-        (erf,)
-    )
-
-    # Update developer proxy count
-    cur.execute(
-        "SELECT COUNT(*) AS proxy_count FROM developer_proxies"
-    )
-    proxy_row = cur.fetchone()
-    proxy_count = proxy_row["proxy_count"] if proxy_row else 0
-
-    # Update developer settings
-    cur.execute(
-        """
-        UPDATE developer_settings
-        SET proxy_count=%s
-        WHERE id=1
-        """,
-        (proxy_count,)
-    )
-
-    # Update DEVELOPER registration
-    cur.execute(
-        """
-        UPDATE registrations
-        SET proxies=%s
-        WHERE erf='DEVELOPER'
-        """,
-        (proxy_count,)
-    )
-
-    conn.commit()
-    conn.close()
-    return redirect("/admin/developer")
 
 # ======================================================
 # VOTE WEIGHT COMPUTATION (LEGACY-CORRECT)
@@ -1245,7 +1155,6 @@ def compute_vote_weight(cur, erf):
 
         return (
             settings["base_votes"]
-            + settings["proxy_count"]
             + proxy_count
         )
 
