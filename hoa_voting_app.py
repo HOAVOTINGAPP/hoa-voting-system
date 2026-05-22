@@ -1302,13 +1302,18 @@ def admin_topics():
     if request.method == "POST":
         title = request.form.get("title", "").strip()
         description = request.form.get("description", "").strip()
+        vote_mode = request.form.get("vote_mode", "AGM").strip().upper()
+
+        if vote_mode not in ["AGM", "GENERAL"]:
+            vote_mode = "AGM"
+
         if title:
             cur.execute(
                 """
-                INSERT INTO topics (title, description, is_open)
-                VALUES (%s, %s, FALSE)
+                INSERT INTO topics (title, description, is_open, vote_mode)
+                VALUES (%s, %s, FALSE, %s)
                 """,
-                (title, description)
+                (title, description, vote_mode)
             )
             conn.commit()
 
@@ -1328,13 +1333,24 @@ def admin_topics():
 <form method="post">
   <p><input name="title" placeholder="Topic title"></p>
   <p><textarea name="description" placeholder="Description"></textarea></p>
+
+  <p>
+    Vote Mode<br>
+    <select name="vote_mode">
+      <option value="AGM">AGM</option>
+      <option value="GENERAL">GENERAL</option>
+    </select>
+  </p>
+
   <button>Create Topic</button>
 </form>
+
 <table>
-<tr><th>Title</th><th>Status</th><th>Actions</th></tr>
+<tr><th>Title</th><th>Mode</th><th>Status</th><th>Actions</th></tr>
 {% for t in topics %}
 <tr>
   <td>{{ t.title }}</td>
+  <td>{{ t.vote_mode }}</td>
   <td>{{ "OPEN" if t.is_open else "CLOSED" }}</td>
   <td>
     <a href="/admin/topics/{{ t.id }}/options">Options</a> |
@@ -1349,97 +1365,6 @@ def admin_topics():
 """ + BASE_TAIL,
         topics=topics,
         branding=branding,
-    )
-
-@app.route("/admin/topics/<int:topic_id>/toggle")
-def admin_toggle_topic(topic_id):
-    if not session.get("admin_logged_in"):
-        return redirect("/admin/login")
-
-    schema = session.get("hoa_schema")
-    if not schema:
-        abort(403)
-
-    conn = get_conn()
-    cur = conn.cursor()
-    set_search_path(cur, schema)
-
-    cur.execute(
-        "UPDATE topics SET is_open = NOT is_open WHERE id=%s",
-        (topic_id,)
-    )
-    conn.commit()
-    conn.close()
-    return redirect("/admin/topics")
-
-@app.route("/admin/topics/<int:topic_id>/options", methods=["GET", "POST"])
-def admin_topic_options(topic_id):
-    if not session.get("admin_logged_in"):
-        return redirect("/admin/login")
-
-    schema = session.get("hoa_schema")
-    if not schema:
-        abort(403)
-
-    conn = get_conn()
-    cur = conn.cursor()
-    set_search_path(cur, schema)
-
-    cur.execute(
-        "SELECT * FROM topics WHERE id=%s",
-        (topic_id,)
-    )
-    topic = cur.fetchone()
-
-    allow_add = not topic["is_open"]
-
-    if request.method == "POST" and allow_add:
-        label = request.form.get("label", "").strip()
-        if label:
-            cur.execute(
-                """
-                INSERT INTO options (topic_id, label)
-                VALUES (%s, %s)
-                """,
-                (topic_id, label)
-            )
-            conn.commit()
-
-    cur.execute(
-        "SELECT * FROM options WHERE topic_id=%s ORDER BY id",
-        (topic_id,)
-    )
-    options = cur.fetchall()
-
-    conn.close()
-
-    branding = get_hoa_branding(schema)
-
-    return render_template_string(
-        BASE_HEAD_ADMIN + """
-<div class="card">
-<h2>Options for: {{ topic.title }}</h2>
-{% if allow_add %}
-<form method="post">
-  <input name="label" placeholder="Option label">
-  <button>Add Option</button>
-</form>
-{% else %}
-<p class="bad">Voting is open. Options are locked.</p>
-{% endif %}
-<table>
-<tr><th>Option</th></tr>
-{% for o in options %}
-<tr><td>{{ o.label }}</td></tr>
-{% endfor %}
-</table>
-<a href="/admin/topics">Back</a>
-</div>
-""" + BASE_TAIL,
-        topic=topic,
-        options=options,
-        allow_add=allow_add,
-        branding=branding
     )
 
 # ======================================================
