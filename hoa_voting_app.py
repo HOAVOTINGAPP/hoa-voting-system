@@ -611,7 +611,7 @@ This ERF has given its proxy and cannot register.
     )
 
 # ======================================================
-# PUBLIC VOTING — LOGIN / LOGOUT (HOA ENFORCED)
+# PUBLIC VOTING — LOGIN / LOGOUT (UNIFIED)
 # ======================================================
 
 @app.route("/vote/<hoa>/login", methods=["GET", "POST"])
@@ -642,30 +642,50 @@ def vote_login(hoa):
     if request.method == "POST":
 
         erf = request.form.get("erf", "").strip().upper()
-        otp = request.form.get("otp", "").strip()
+        password = request.form.get("password", "").strip()
+        vote_mode = request.form.get("vote_mode", "AGM").strip().upper()
 
         conn = get_conn()
         cur = conn.cursor()
         set_search_path(cur, schema)
 
-        cur.execute(
-            """
-            SELECT * FROM registrations
-            WHERE erf=%s AND otp=%s
-            """,
-            (erf, otp)
-        )
+        valid = False
 
-        row = cur.fetchone()
+        if vote_mode == "AGM":
+
+            cur.execute(
+                """
+                SELECT 1
+                FROM registrations
+                WHERE erf=%s AND otp=%s
+                """,
+                (erf, password)
+            )
+
+            valid = cur.fetchone() is not None
+
+        elif vote_mode == "GENERAL":
+
+            cur.execute(
+                """
+                SELECT 1
+                FROM owners
+                WHERE erf=%s AND id_number=%s
+                """,
+                (erf, password)
+            )
+
+            valid = cur.fetchone() is not None
+
         conn.close()
 
-        if not row:
+        if not valid:
             branding = get_hoa_branding(schema)
 
             return render_template_string(
                 BASE_HEAD_PUBLIC + """
 <div class="card bad">
-Invalid ERF or OTP
+Invalid login credentials
 </div>
 """ + BASE_TAIL,
                 branding=branding
@@ -673,6 +693,8 @@ Invalid ERF or OTP
 
         session["voter_erf"] = erf
         session["hoa_schema"] = schema
+        session["vote_mode"] = vote_mode
+
         return redirect(f"/vote/{hoa}")
 
     branding = get_hoa_branding(schema)
@@ -681,22 +703,95 @@ Invalid ERF or OTP
         BASE_HEAD_PUBLIC + """
 <div class="card">
 <h2>Voting Login</h2>
+
 <form method="post">
-  <p><input name="erf" placeholder="ERF"></p>
-  <p><input name="otp" placeholder="OTP"></p>
+
+  <p>
+    Voting Type<br>
+    <select name="vote_mode">
+      <option value="AGM">AGM</option>
+      <option value="GENERAL">GENERAL</option>
+    </select>
+  </p>
+
+  <p>
+    <input name="erf" placeholder="ERF">
+  </p>
+
+  <p>
+    <input name="password" placeholder="OTP or ID Number">
+  </p>
+
   <button>Login</button>
+
 </form>
 </div>
 """ + BASE_TAIL,
         branding=branding
     )
 
+
 @app.route("/vote/<hoa>/logout")
 def vote_logout(hoa):
     session.pop("voter_erf", None)
+    session.pop("vote_mode", None)
     return redirect(f"/vote/{hoa}/login")
 
 
+# ======================================================
+# PUBLIC VOTING — HOA SELECTION PORTAL
+# ======================================================
+
+@app.route("/vote")
+def vote_portal():
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT name, schema_name
+        FROM public.hoas
+        WHERE enabled = TRUE
+        ORDER BY name
+        """
+    )
+
+    hoas = cur.fetchall()
+    conn.close()
+
+    if not hoas:
+        abort(404)
+
+    return render_template_string(
+        BASE_HEAD_PUBLIC + """
+<div class="card">
+<h2>Select Your HOA</h2>
+
+<table>
+<tr>
+  <th>HOA Name</th>
+  <th>Voting Portal</th>
+</tr>
+
+{% for h in hoas %}
+<tr>
+  <td>{{ h.name }}</td>
+  <td>
+    <a href="/vote/{{ h.schema_name }}/login">
+      Enter Voting Portal
+    </a>
+  </td>
+</tr>
+{% endfor %}
+
+</table>
+</div>
+""" + BASE_TAIL,
+        hoas=hoas,
+        branding=None
+    )
+    
 # ======================================================
 # PUBLIC VOTING — HOA SELECTION PORTAL
 # ======================================================
