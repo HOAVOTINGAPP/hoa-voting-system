@@ -737,61 +737,6 @@ def vote_logout(hoa):
     session.pop("vote_mode", None)
     return redirect(f"/vote/{hoa}/login")
 
-
-# ======================================================
-# PUBLIC VOTING — HOA SELECTION PORTAL
-# ======================================================
-
-@app.route("/vote")
-def vote_portal():
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT name, schema_name
-        FROM public.hoas
-        WHERE enabled = TRUE
-        ORDER BY name
-        """
-    )
-
-    hoas = cur.fetchall()
-    conn.close()
-
-    if not hoas:
-        abort(404)
-
-    return render_template_string(
-        BASE_HEAD_PUBLIC + """
-<div class="card">
-<h2>Select Your HOA</h2>
-
-<table>
-<tr>
-  <th>HOA Name</th>
-  <th>Voting Portal</th>
-</tr>
-
-{% for h in hoas %}
-<tr>
-  <td>{{ h.name }}</td>
-  <td>
-    <a href="/vote/{{ h.schema_name }}/login">
-      Enter Voting Portal
-    </a>
-  </td>
-</tr>
-{% endfor %}
-
-</table>
-</div>
-""" + BASE_TAIL,
-        hoas=hoas,
-        branding=None
-    )
-    
 # ======================================================
 # PUBLIC VOTING — HOA SELECTION PORTAL
 # ======================================================
