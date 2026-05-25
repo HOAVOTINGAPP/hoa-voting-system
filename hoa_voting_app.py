@@ -728,16 +728,25 @@ def vote_portal():
 <h2>Select Your HOA</h2>
 
 <table>
-<tr><th>HOA Name</th><th>Access Voting Portal</th></tr>
+<tr>
+  <th>HOA Name</th>
+  <th>AGM Voting</th>
+  <th>GENERAL Voting</th>
+</tr>
 
 {% for h in hoas %}
 <tr>
-<td>{{ h.name }}</td>
-<td>
-<a href="/vote/{{ h.schema_name }}/login">
-Open Voting Portal
-</a>
-</td>
+  <td>{{ h.name }}</td>
+  <td>
+    <a href="/vote/{{ h.schema_name }}/login/agm">
+      AGM Portal
+    </a>
+  </td>
+  <td>
+    <a href="/vote/{{ h.schema_name }}/login/general">
+      GENERAL Portal
+    </a>
+  </td>
 </tr>
 {% endfor %}
 
@@ -747,7 +756,168 @@ Open Voting Portal
         hoas=hoas,
         branding=None
     )
+    
+@app.route("/vote/<hoa>/login/agm", methods=["GET", "POST"])
+def vote_login_agm(hoa):
 
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT schema_name
+        FROM public.hoas
+        WHERE schema_name = %s
+        AND enabled = TRUE
+        """,
+        (hoa,)
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        abort(403)
+
+    schema = row["schema_name"]
+    session["hoa_schema"] = schema
+    session["vote_mode"] = "AGM"
+
+    if request.method == "POST":
+
+        erf = request.form.get("erf", "").strip().upper()
+        otp = request.form.get("otp", "").strip()
+
+        conn = get_conn()
+        cur = conn.cursor()
+        set_search_path(cur, schema)
+
+        cur.execute(
+            """
+            SELECT * FROM registrations
+            WHERE erf=%s AND otp=%s
+            """,
+            (erf, otp)
+        )
+
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            branding = get_hoa_branding(schema)
+
+            return render_template_string(
+                BASE_HEAD_PUBLIC + """
+<div class="card bad">
+Invalid ERF or OTP
+</div>
+""" + BASE_TAIL,
+                branding=branding
+            )
+
+        session["voter_erf"] = erf
+        session["hoa_schema"] = schema
+        session["vote_mode"] = "AGM"
+
+        return redirect(f"/vote/{hoa}")
+
+    branding = get_hoa_branding(schema)
+
+    return render_template_string(
+        BASE_HEAD_PUBLIC + """
+<div class="card">
+<h2>AGM Voting Login</h2>
+<form method="post">
+  <p><input name="erf" placeholder="ERF"></p>
+  <p><input name="otp" placeholder="OTP"></p>
+  <button>Login</button>
+</form>
+</div>
+""" + BASE_TAIL,
+        branding=branding
+    )
+
+
+@app.route("/vote/<hoa>/login/general", methods=["GET", "POST"])
+def vote_login_general(hoa):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT schema_name
+        FROM public.hoas
+        WHERE schema_name = %s
+        AND enabled = TRUE
+        """,
+        (hoa,)
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        abort(403)
+
+    schema = row["schema_name"]
+    session["hoa_schema"] = schema
+    session["vote_mode"] = "GENERAL"
+
+    if request.method == "POST":
+
+        erf = request.form.get("erf", "").strip().upper()
+        id_number = request.form.get("id_number", "").strip()
+
+        conn = get_conn()
+        cur = conn.cursor()
+        set_search_path(cur, schema)
+
+        cur.execute(
+            """
+            SELECT * FROM owners
+            WHERE erf=%s AND id_number=%s
+            """,
+            (erf, id_number)
+        )
+
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            branding = get_hoa_branding(schema)
+
+            return render_template_string(
+                BASE_HEAD_PUBLIC + """
+<div class="card bad">
+Invalid ERF or ID Number
+</div>
+""" + BASE_TAIL,
+                branding=branding
+            )
+
+        session["voter_erf"] = erf
+        session["hoa_schema"] = schema
+        session["vote_mode"] = "GENERAL"
+
+        return redirect(f"/vote/{hoa}")
+
+    branding = get_hoa_branding(schema)
+
+    return render_template_string(
+        BASE_HEAD_PUBLIC + """
+<div class="card">
+<h2>GENERAL Voting Login</h2>
+<form method="post">
+  <p><input name="erf" placeholder="ERF"></p>
+  <p><input name="id_number" placeholder="ID Number"></p>
+  <button>Login</button>
+</form>
+</div>
+""" + BASE_TAIL,
+        branding=branding
+    )
+    
 # ======================================================
 # PUBLIC VOTING — TOPIC LIST
 # ======================================================
@@ -768,12 +938,16 @@ def vote_index(hoa):
     cur = conn.cursor()
     set_search_path(cur, schema)
 
+    vote_mode = session.get("vote_mode", "AGM")
+
     cur.execute(
         """
         SELECT * FROM topics
         WHERE is_open = TRUE
+        AND vote_mode = %s
         ORDER BY id
-        """
+        """,
+        (vote_mode,)
     )
     topics = cur.fetchall()
 
@@ -1426,7 +1600,11 @@ def vote_topic(hoa, topic_id):
             branding=branding
         )
 
-    weight = compute_vote_weight(cur, erf)
+    if topic["vote_mode"] == "GENERAL":
+        weight = 1
+    else:
+        weight = compute_vote_weight(cur, erf)
+
     if weight <= 0:
         conn.close()
 
