@@ -1540,7 +1540,110 @@ def admin_topics():
         topics=topics,
         branding=branding,
     )
+@app.route("/admin/topics/<int:topic_id>/toggle")
+def admin_toggle_topic(topic_id):
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
 
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        "UPDATE topics SET is_open = NOT is_open WHERE id=%s",
+        (topic_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/admin/topics")
+
+
+@app.route("/admin/topics/<int:topic_id>/options", methods=["GET", "POST"])
+def admin_topic_options(topic_id):
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        "SELECT * FROM topics WHERE id=%s",
+        (topic_id,)
+    )
+    topic = cur.fetchone()
+
+    if not topic:
+        conn.close()
+        abort(404)
+
+    allow_add = not topic["is_open"]
+
+    if request.method == "POST" and allow_add:
+        label = request.form.get("label", "").strip()
+
+        if label:
+            cur.execute(
+                """
+                INSERT INTO options (topic_id, label)
+                VALUES (%s, %s)
+                """,
+                (topic_id, label)
+            )
+            conn.commit()
+
+    cur.execute(
+        "SELECT * FROM options WHERE topic_id=%s ORDER BY id",
+        (topic_id,)
+    )
+    options = cur.fetchall()
+
+    conn.close()
+
+    branding = get_hoa_branding(schema)
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Options for: {{ topic.title }}</h2>
+
+{% if allow_add %}
+<form method="post">
+  <input name="label" placeholder="Option label">
+  <button>Add Option</button>
+</form>
+{% else %}
+<p class="bad">Voting is open. Options are locked.</p>
+{% endif %}
+
+<table>
+<tr><th>Option</th></tr>
+{% for o in options %}
+<tr>
+  <td>{{ o.label }}</td>
+</tr>
+{% endfor %}
+</table>
+
+<br>
+<a href="/admin/topics" class="btn">Back</a>
+</div>
+""" + BASE_TAIL,
+        topic=topic,
+        options=options,
+        allow_add=allow_add,
+        branding=branding
+    )
 # ======================================================
 # PUBLIC VOTING — CAST VOTE
 # ======================================================
