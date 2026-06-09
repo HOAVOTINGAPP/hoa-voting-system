@@ -1401,9 +1401,20 @@ def admin_topics():
   <td>{{ "OPEN" if t.is_open else "CLOSED" }}</td>
   <td>
     <a href="/admin/topics/{{ t.id }}/options">Options</a> |
+
     <a href="/admin/topics/{{ t.id }}/toggle">
       {{ "Close" if t.is_open else "Open" }}
     </a>
+
+    {% if not t.is_open %}
+    |
+    <form method="post"
+          action="/admin/topics/{{ t.id }}/delete"
+          style="display:inline"
+          onsubmit="return confirm('Delete this topic and all votes?');">
+      <button type="submit">Delete</button>
+    </form>
+    {% endif %}
   </td>
 </tr>
 {% endfor %}
@@ -1517,6 +1528,58 @@ def admin_topic_options(topic_id):
         allow_add=allow_add,
         branding=branding
     )
+
+@app.route("/admin/topics/<int:topic_id>/delete", methods=["POST"])
+def admin_delete_topic(topic_id):
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        "SELECT * FROM topics WHERE id=%s",
+        (topic_id,)
+    )
+    topic = cur.fetchone()
+
+    if not topic:
+        conn.close()
+        abort(404)
+
+    # Safety: only closed topics may be deleted
+    if topic["is_open"]:
+        conn.close()
+        return redirect("/admin/topics")
+
+    # Delete votes first
+    cur.execute(
+        "DELETE FROM votes WHERE topic_id=%s",
+        (topic_id,)
+    )
+
+    # Delete options
+    cur.execute(
+        "DELETE FROM options WHERE topic_id=%s",
+        (topic_id,)
+    )
+
+    # Delete topic
+    cur.execute(
+        "DELETE FROM topics WHERE id=%s",
+        (topic_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/admin/topics")
+    
 # ======================================================
 # PUBLIC VOTING — CAST VOTE
 # ======================================================
