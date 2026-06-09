@@ -427,11 +427,30 @@ def admin_owners():
 
     if request.method == "POST":
         file = request.files.get("file")
+
         if file:
-            reader = csv.reader(StringIO(file.read().decode("utf-8")))
+
+            content = file.read().decode("utf-8")
+
+            try:
+                dialect = csv.Sniffer().sniff(
+                    content[:2048],
+                    delimiters=",;"
+                )
+                delimiter = dialect.delimiter
+            except:
+                delimiter = ","
+
+            reader = csv.reader(
+                StringIO(content),
+                delimiter=delimiter
+            )
+
             for row in reader:
+
                 if not row:
                     continue
+
                 if row[0].strip().lower() == "erf":
                     continue
 
@@ -450,6 +469,7 @@ def admin_owners():
                     """,
                     (erf, name, id_number)
                 )
+
             conn.commit()
 
     cur.execute(
@@ -463,14 +483,17 @@ def admin_owners():
 
     return render_template_string(
         BASE_HEAD_ADMIN + """
-        <div class="card">
+<div class="card">
 <h2>Owners</h2>
+
 <form method="post" enctype="multipart/form-data">
   <input type="file" name="file">
   <button>Upload CSV</button>
 </form>
+
 <table>
 <tr><th>ERF</th><th>Name</th><th>ID Number</th></tr>
+
 {% for o in owners %}
 <tr>
   <td>{{ o.erf }}</td>
@@ -478,6 +501,7 @@ def admin_owners():
   <td>{{ o.id_number }}</td>
 </tr>
 {% endfor %}
+
 </table>
 </div>
 """ + BASE_TAIL,
