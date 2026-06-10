@@ -491,6 +491,12 @@ def admin_owners():
 <div class="card">
 <h2>Owners</h2>
 
+<p>
+  <a href="/admin/owners/add" class="btn">
+    Add Owner
+  </a>
+</p>
+
 <form method="post" enctype="multipart/form-data">
   <input type="file" name="file"><br><br>
 
@@ -519,7 +525,88 @@ def admin_owners():
         owners=owners,
         branding=branding
     )
+    
+@app.route("/admin/owners/add", methods=["GET", "POST"])
+def admin_add_owner():
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
 
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    error = None
+
+    if request.method == "POST":
+
+        erf = request.form.get("erf", "").strip().upper()
+        name = request.form.get("name", "").strip()
+        id_number = request.form.get("id_number", "").strip()
+
+        if not erf:
+            error = "ERF is required"
+        else:
+
+            cur.execute(
+                """
+                INSERT INTO owners (erf, name, id_number)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (erf)
+                DO NOTHING
+                """,
+                (erf, name, id_number)
+            )
+
+            conn.commit()
+            conn.close()
+
+            return redirect("/admin/owners")
+
+    branding = get_hoa_branding(schema)
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+<h2>Add Owner</h2>
+
+{% if error %}
+<p class="bad">{{ error }}</p>
+{% endif %}
+
+<form method="post">
+
+  <p>
+    <input name="erf" placeholder="ERF">
+  </p>
+
+  <p>
+    <input name="name" placeholder="Owner Name">
+  </p>
+
+  <p>
+    <input name="id_number" placeholder="ID Number">
+  </p>
+
+  <button>Save Owner</button>
+
+</form>
+
+<br>
+
+<a href="/admin/owners" class="btn">Back</a>
+
+</div>
+""" + BASE_TAIL,
+        error=error,
+        branding=branding
+    )
+    
 # ======================================================
 # REGISTRATIONS & OTP (NEGATIVE-GUARD FIXED)
 # ======================================================
