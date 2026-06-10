@@ -495,6 +495,10 @@ def admin_owners():
   <a href="/admin/owners/add" class="btn">
     Add Owner
   </a>
+
+  <a href="/admin/owners/export" class="btn">
+    Export Owners CSV
+  </a>
 </p>
 
 <form method="post" enctype="multipart/form-data">
@@ -816,6 +820,62 @@ Owner cannot be deleted because voting records exist.
     conn.close()
 
     return redirect("/admin/owners")
+
+@app.route("/admin/owners/export")
+def export_owners():
+
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        """
+        SELECT
+            erf,
+            name,
+            id_number
+        FROM owners
+        ORDER BY erf
+        """
+    )
+
+    owners = cur.fetchall()
+
+    conn.close()
+
+    out = StringIO()
+
+    writer = csv.writer(
+        out,
+        delimiter=';'
+    )
+
+    writer.writerow([
+        "ERF",
+        "NAME",
+        "ID_NUMBER"
+    ])
+
+    for o in owners:
+        writer.writerow([
+            o["erf"],
+            o["name"],
+            o["id_number"]
+        ])
+
+    return send_file(
+        BytesIO(out.getvalue().encode()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="owners.csv"
+    )
     
 # ======================================================
 # REGISTRATIONS & OTP (NEGATIVE-GUARD FIXED)
