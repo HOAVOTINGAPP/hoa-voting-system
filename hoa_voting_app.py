@@ -509,13 +509,21 @@ def admin_owners():
 </form>
 
 <table>
-<tr><th>ERF</th><th>Name</th><th>ID Number</th></tr>
+<tr>
+  <th>ERF</th>
+  <th>Name</th>
+  <th>ID Number</th>
+  <th>Actions</th>
+</tr>
 
 {% for o in owners %}
 <tr>
   <td>{{ o.erf }}</td>
   <td>{{ o.name }}</td>
   <td>{{ o.id_number }}</td>
+  <td>
+    <a href="/admin/owners/edit/{{ o.erf }}">Edit</a>
+  </td>
 </tr>
 {% endfor %}
 
@@ -604,6 +612,90 @@ def admin_add_owner():
 </div>
 """ + BASE_TAIL,
         error=error,
+        branding=branding
+    )
+    
+@app.route("/admin/owners/edit/<erf>", methods=["GET", "POST"])
+def admin_edit_owner(erf):
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        "SELECT * FROM owners WHERE erf=%s",
+        (erf,)
+    )
+    owner = cur.fetchone()
+
+    if not owner:
+        conn.close()
+        abort(404)
+
+    if request.method == "POST":
+
+        name = request.form.get("name", "").strip()
+        id_number = request.form.get("id_number", "").strip()
+
+        cur.execute(
+            """
+            UPDATE owners
+            SET name=%s,
+                id_number=%s
+            WHERE erf=%s
+            """,
+            (name, id_number, erf)
+        )
+
+        conn.commit()
+        conn.close()
+
+        return redirect("/admin/owners")
+
+    branding = get_hoa_branding(schema)
+
+    conn.close()
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+
+<h2>Edit Owner</h2>
+
+<form method="post">
+
+<p>
+ERF<br>
+<input value="{{ owner.erf }}" readonly>
+</p>
+
+<p>
+Name<br>
+<input name="name" value="{{ owner.name or '' }}">
+</p>
+
+<p>
+ID Number<br>
+<input name="id_number" value="{{ owner.id_number or '' }}">
+</p>
+
+<button>Save Changes</button>
+
+</form>
+
+<br>
+
+<a href="/admin/owners" class="btn">Back</a>
+
+</div>
+""" + BASE_TAIL,
+        owner=owner,
         branding=branding
     )
     
