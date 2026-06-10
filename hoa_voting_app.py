@@ -430,8 +430,13 @@ def admin_owners():
 
         if file:
 
-            content = file.read().decode("utf-8")
+            replace_all = request.form.get("replace_all") == "on"
 
+            if replace_all:
+                cur.execute("DELETE FROM owners")
+
+            content = file.read().decode("utf-8")
+            
             try:
                 dialect = csv.Sniffer().sniff(
                     content[:2048],
@@ -487,7 +492,13 @@ def admin_owners():
 <h2>Owners</h2>
 
 <form method="post" enctype="multipart/form-data">
-  <input type="file" name="file">
+  <input type="file" name="file"><br><br>
+
+  <label>
+    <input type="checkbox" name="replace_all">
+    Replace entire owner register
+  </label><br><br>
+
   <button>Upload CSV</button>
 </form>
 
