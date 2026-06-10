@@ -521,9 +521,14 @@ def admin_owners():
   <td>{{ o.erf }}</td>
   <td>{{ o.name }}</td>
   <td>{{ o.id_number }}</td>
-  <td>
-    <a href="/admin/owners/edit/{{ o.erf }}">Edit</a>
-  </td>
+<td>
+  <a href="/admin/owners/edit/{{ o.erf }}">Edit</a>
+  |
+  <a href="/admin/owners/delete/{{ o.erf }}"
+     onclick="return confirm('Delete this owner?');">
+     Delete
+  </a>
+</td>
 </tr>
 {% endfor %}
 
@@ -698,6 +703,119 @@ ID Number<br>
         owner=owner,
         branding=branding
     )
+
+@app.route("/admin/owners/delete/<erf>")
+def admin_delete_owner(erf):
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    # Cannot delete if registered
+    cur.execute(
+        "SELECT 1 FROM registrations WHERE erf=%s",
+        (erf,)
+    )
+    if cur.fetchone():
+        conn.close()
+        return render_template_string(
+            BASE_HEAD_ADMIN + """
+<div class="card bad">
+Owner cannot be deleted because the ERF is registered for voting.
+<br><br>
+<a href="/admin/owners" class="btn">Back</a>
+</div>
+""" + BASE_TAIL,
+            branding=get_hoa_branding(schema)
+        )
+
+    # Cannot delete if primary proxy
+    cur.execute(
+        "SELECT 1 FROM owner_proxies WHERE primary_erf=%s",
+        (erf,)
+    )
+    if cur.fetchone():
+        conn.close()
+        return render_template_string(
+            BASE_HEAD_ADMIN + """
+<div class="card bad">
+Owner cannot be deleted because proxy records exist.
+<br><br>
+<a href="/admin/owners" class="btn">Back</a>
+</div>
+""" + BASE_TAIL,
+            branding=get_hoa_branding(schema)
+        )
+
+    # Cannot delete if proxy holder
+    cur.execute(
+        "SELECT 1 FROM owner_proxies WHERE proxy_erf=%s",
+        (erf,)
+    )
+    if cur.fetchone():
+        conn.close()
+        return render_template_string(
+            BASE_HEAD_ADMIN + """
+<div class="card bad">
+Owner cannot be deleted because proxy records exist.
+<br><br>
+<a href="/admin/owners" class="btn">Back</a>
+</div>
+""" + BASE_TAIL,
+            branding=get_hoa_branding(schema)
+        )
+
+    # Cannot delete if developer proxy
+    cur.execute(
+        "SELECT 1 FROM developer_proxies WHERE erf=%s",
+        (erf,)
+    )
+    if cur.fetchone():
+        conn.close()
+        return render_template_string(
+            BASE_HEAD_ADMIN + """
+<div class="card bad">
+Owner cannot be deleted because developer proxy records exist.
+<br><br>
+<a href="/admin/owners" class="btn">Back</a>
+</div>
+""" + BASE_TAIL,
+            branding=get_hoa_branding(schema)
+        )
+
+    # Cannot delete if voted
+    cur.execute(
+        "SELECT 1 FROM votes WHERE erf=%s",
+        (erf,)
+    )
+    if cur.fetchone():
+        conn.close()
+        return render_template_string(
+            BASE_HEAD_ADMIN + """
+<div class="card bad">
+Owner cannot be deleted because voting records exist.
+<br><br>
+<a href="/admin/owners" class="btn">Back</a>
+</div>
+""" + BASE_TAIL,
+            branding=get_hoa_branding(schema)
+        )
+
+    cur.execute(
+        "DELETE FROM owners WHERE erf=%s",
+        (erf,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/admin/owners")
     
 # ======================================================
 # REGISTRATIONS & OTP (NEGATIVE-GUARD FIXED)
