@@ -455,6 +455,26 @@ def admin_dashboard():
     )
     open_topics = cur.fetchone()["c"]
 
+    cur.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM topics
+        WHERE is_open=TRUE
+        AND vote_mode='AGM'
+        """
+    )
+    open_agm_topics = cur.fetchone()["c"]
+
+    cur.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM topics
+        WHERE is_open=TRUE
+          AND vote_mode='GENERAL'
+        """
+    )
+    open_general_topics = cur.fetchone()["c"]
+
     # Votes cast
     cur.execute("SELECT COUNT(*) AS c FROM votes")
     votes_cast = cur.fetchone()["c"]
@@ -467,6 +487,23 @@ def admin_dashboard():
         """
     )
     weighted_votes = cur.fetchone()["total"]
+    
+    # Latest voting activity
+    cur.execute(
+        """
+        SELECT
+            v.erf,
+            t.title,
+            v.timestamp
+        FROM votes v
+        JOIN topics t
+          ON t.id = v.topic_id
+        ORDER BY v.timestamp DESC
+        LIMIT 10
+        """
+    )
+
+    recent_votes = cur.fetchall()
 
     conn.close()
 
@@ -541,6 +578,16 @@ Public voting link:
 </tr>
 
 <tr>
+  <td>Open AGM Topics</td>
+  <td>{{ open_agm_topics }}</td>
+</tr>
+
+<tr>
+  <td>Open GENERAL Topics</td>
+  <td>{{ open_general_topics }}</td>
+</tr>
+
+<tr>
   <td>Votes Cast</td>
   <td>{{ votes_cast }}</td>
 </tr>
@@ -558,6 +605,29 @@ Public voting link:
 </table>
 
 </div>
+<div class="card">
+
+<h3>Latest Voting Activity</h3>
+
+<table>
+
+<tr>
+  <th>ERF</th>
+  <th>Topic</th>
+  <th>Time</th>
+</tr>
+
+{% for v in recent_votes %}
+<tr>
+  <td>{{ v.erf }}</td>
+  <td>{{ v.title }}</td>
+  <td>{{ v.timestamp }}</td>
+</tr>
+{% endfor %}
+
+</table>
+
+</div>
 """ + BASE_TAIL,
         branding=branding,
         owners=owners,
@@ -568,9 +638,12 @@ Public voting link:
         developer_total_weight=developer_total_weight,
         topics=topics,
         open_topics=open_topics,
+        open_agm_topics=open_agm_topics,
+        open_general_topics=open_general_topics,
         votes_cast=votes_cast,
         weighted_votes=weighted_votes,
-        registration_rate=registration_rate
+        registration_rate=registration_rate,
+        recent_votes=recent_votes
     )
     
 # ======================================================
