@@ -505,8 +505,24 @@ def admin_dashboard():
 
     recent_votes = cur.fetchall()
 
-    conn.close()
+    cur.execute(
+        """
+        SELECT COALESCE(quorum_threshold, 50) AS quorum_threshold
+        FROM public.hoas
+        WHERE schema_name=%s
+        """,
+        (schema,)
+    )
 
+    row = cur.fetchone()
+
+    quorum_threshold = (
+        row["quorum_threshold"]
+        if row else 50
+    )
+
+    conn.close()
+    
     registration_rate = 0
 
     if owners > 0:
@@ -518,7 +534,7 @@ def admin_dashboard():
     quorum_registered = registrations
     quorum_total = owners
 
-    if registration_rate >= 50:
+    if registration_rate >= quorum_threshold:
         quorum_status = "YES"
     else:
         quorum_status = "NO"
@@ -636,7 +652,7 @@ Public voting link:
 </tr>
 
 <tr>
-  <td>50% Threshold Reached</td>
+  <td>{{ quorum_threshold }}% Threshold Reached</td>
   <td>{{ quorum_status }}</td>
 </tr>
 
@@ -686,6 +702,7 @@ Public voting link:
         quorum_registered=quorum_registered,
         quorum_total=quorum_total,
         quorum_status=quorum_status,
+        quorum_threshold=quorum_threshold,
         recent_votes=recent_votes
     )
     
@@ -2956,6 +2973,87 @@ def export_registrations():
         mimetype="text/csv",
         as_attachment=True,
         download_name="registrations_quorum.csv"
+    )
+
+# ======================================================
+# HOA SETTINGS
+# ======================================================
+
+@app.route("/admin/settings", methods=["GET", "POST"])
+def admin_settings():
+
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if request.method == "POST":
+
+        quorum_threshold = int(
+            request.form.get("quorum_threshold", "50")
+        )
+
+        cur.execute(
+            """
+            UPDATE public.hoas
+            SET quorum_threshold=%s
+            WHERE schema_name=%s
+            """,
+            (quorum_threshold, schema)
+        )
+
+        conn.commit()
+
+    cur.execute(
+        """
+        SELECT
+            name,
+            portal_title,
+            quorum_threshold
+        FROM public.hoas
+        WHERE schema_name=%s
+        """,
+        (schema,)
+    )
+
+    hoa = cur.fetchone()
+
+    conn.close()
+
+    branding = get_hoa_branding(schema)
+
+    return render_template_string(
+        BASE_HEAD_ADMIN + """
+<div class="card">
+
+<h2>HOA Settings</h2>
+
+<form method="post">
+
+<p>
+Quorum Threshold (%)
+<br>
+<input
+    type="number"
+    name="quorum_threshold"
+    min="1"
+    max="100"
+    value="{{ hoa.quorum_threshold or 50 }}">
+</p>
+
+<button>Save Settings</button>
+
+</form>
+
+</div>
+""" + BASE_TAIL,
+        hoa=hoa,
+        branding=branding
     )
 
 # ======================================================
