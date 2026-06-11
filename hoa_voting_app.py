@@ -1312,12 +1312,30 @@ This ERF has given its proxy and cannot register.
   <button>Register</button>
 </form>
 <table>
-<tr><th>ERF</th><th>Numeric Proxies</th><th>OTP</th></tr>
+<tr>
+  <th>ERF</th>
+  <th>Numeric Proxies</th>
+  <th>OTP</th>
+  <th>Action</th>
+</tr>
 {% for r in rows %}
 <tr>
   <td>{{ r.erf }}</td>
   <td>{{ r.proxies }}</td>
   <td>{{ r.otp }}</td>
+
+  <td>
+    <form method="post"
+          action="/admin/registrations/{{ r.erf }}/delete"
+          style="display:inline"
+          onsubmit="return confirm('Delete this registration?');">
+
+      <button type="submit">
+        Delete
+      </button>
+
+    </form>
+  </td>
 </tr>
 {% endfor %}
 </table>
@@ -1327,6 +1345,69 @@ This ERF has given its proxy and cannot register.
         message=message,
         branding=branding
     )
+
+@app.route("/admin/registrations/<erf>/delete", methods=["POST"])
+def admin_delete_registration(erf):
+
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    # Protect audit trail
+    cur.execute(
+        """
+        SELECT 1
+        FROM votes
+        WHERE erf=%s
+        LIMIT 1
+        """,
+        (erf,)
+    )
+
+    if cur.fetchone():
+
+        conn.close()
+
+        return render_template_string(
+            BASE_HEAD_ADMIN + """
+<div class="card bad">
+
+<h2>Cannot Delete Registration</h2>
+
+<p>
+This ERF has already voted and the registration
+cannot be removed.
+</p>
+
+<a href="/admin/registrations" class="btn">
+Back
+</a>
+
+</div>
+""" + BASE_TAIL,
+            branding=get_hoa_branding(schema)
+        )
+
+    # Delete registration
+    cur.execute(
+        """
+        DELETE FROM registrations
+        WHERE erf=%s
+        """,
+        (erf,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/admin/registrations")
 
 # ======================================================
 # PUBLIC VOTING — LOGIN / LOGOUT (UNIFIED)
