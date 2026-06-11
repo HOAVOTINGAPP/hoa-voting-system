@@ -395,19 +395,149 @@ def admin_dashboard():
         return redirect("/admin/login")
 
     schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    # Owners
+    cur.execute("SELECT COUNT(*) AS c FROM owners")
+    owners = cur.fetchone()["c"]
+
+    # Registrations
+    cur.execute("SELECT COUNT(*) AS c FROM registrations")
+    registrations = cur.fetchone()["c"]
+
+    # Owner proxies
+    cur.execute("SELECT COUNT(*) AS c FROM owner_proxies")
+    owner_proxies = cur.fetchone()["c"]
+
+    # Developer proxies
+    cur.execute("SELECT COUNT(*) AS c FROM developer_proxies")
+    developer_proxies = cur.fetchone()["c"]
+
+    # Topics
+    cur.execute("SELECT COUNT(*) AS c FROM topics")
+    topics = cur.fetchone()["c"]
+
+    # Open topics
+    cur.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM topics
+        WHERE is_open=TRUE
+        """
+    )
+    open_topics = cur.fetchone()["c"]
+
+    # Votes cast
+    cur.execute("SELECT COUNT(*) AS c FROM votes")
+    votes_cast = cur.fetchone()["c"]
+
+    # Weighted votes cast
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(weight),0) AS total
+        FROM votes
+        """
+    )
+    weighted_votes = cur.fetchone()["total"]
+
+    conn.close()
+
+    registration_rate = 0
+
+    if owners > 0:
+        registration_rate = round(
+            (registrations / owners) * 100,
+            1
+        )
+
     branding = get_hoa_branding(schema)
 
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
-<h2>{{ branding.portal_title or branding.name }} — Admin Dashboard</h2>
-<p>Public voting link:</p>
+
+<h2>{{ branding.portal_title or branding.name }} — Dashboard</h2>
+
+<p>
+Public voting link:
+<br>
 <code>{{ url_for('vote_login', hoa=session['hoa_schema'], _external=True) }}</code>
+</p>
+
+</div>
+
+<div class="card">
+
+<h3>HOA Statistics</h3>
+
+<table>
+
+<tr>
+  <td>Owners</td>
+  <td>{{ owners }}</td>
+</tr>
+
+<tr>
+  <td>Registrations</td>
+  <td>{{ registrations }}</td>
+</tr>
+
+<tr>
+  <td>Owner Proxies</td>
+  <td>{{ owner_proxies }}</td>
+</tr>
+
+<tr>
+  <td>Developer Proxies</td>
+  <td>{{ developer_proxies }}</td>
+</tr>
+
+<tr>
+  <td>Topics</td>
+  <td>{{ topics }}</td>
+</tr>
+
+<tr>
+  <td>Open Topics</td>
+  <td>{{ open_topics }}</td>
+</tr>
+
+<tr>
+  <td>Votes Cast</td>
+  <td>{{ votes_cast }}</td>
+</tr>
+
+<tr>
+  <td>Weighted Votes Cast</td>
+  <td>{{ weighted_votes }}</td>
+</tr>
+
+<tr>
+  <td>Registration Rate</td>
+  <td>{{ registration_rate }}%</td>
+</tr>
+
+</table>
+
 </div>
 """ + BASE_TAIL,
-        branding=branding
+        branding=branding,
+        owners=owners,
+        registrations=registrations,
+        owner_proxies=owner_proxies,
+        developer_proxies=developer_proxies,
+        topics=topics,
+        open_topics=open_topics,
+        votes_cast=votes_cast,
+        weighted_votes=weighted_votes,
+        registration_rate=registration_rate
     )
-
+    
 # ======================================================
 # OWNERS (CSV UPLOAD / VIEW)
 # ======================================================
