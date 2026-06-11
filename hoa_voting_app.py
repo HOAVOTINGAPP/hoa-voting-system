@@ -514,6 +514,14 @@ def admin_dashboard():
             (registrations / owners) * 100,
             1
         )
+        
+    quorum_registered = registrations
+    quorum_total = owners
+
+    if registration_rate >= 50:
+        quorum_status = "YES"
+    else:
+        quorum_status = "NO"
 
     branding = get_hoa_branding(schema)
 
@@ -605,6 +613,37 @@ Public voting link:
 </table>
 
 </div>
+
+<div class="card">
+
+<h3>Quorum Monitor</h3>
+
+<table>
+
+<tr>
+  <td>Total Owners</td>
+  <td>{{ quorum_total }}</td>
+</tr>
+
+<tr>
+  <td>Registered Owners</td>
+  <td>{{ quorum_registered }}</td>
+</tr>
+
+<tr>
+  <td>Registration Percentage</td>
+  <td>{{ registration_rate }}%</td>
+</tr>
+
+<tr>
+  <td>50% Threshold Reached</td>
+  <td>{{ quorum_status }}</td>
+</tr>
+
+</table>
+
+</div>
+
 <div class="card">
 
 <h3>Latest Voting Activity</h3>
@@ -628,6 +667,7 @@ Public voting link:
 </table>
 
 </div>
+
 """ + BASE_TAIL,
         branding=branding,
         owners=owners,
@@ -643,6 +683,9 @@ Public voting link:
         votes_cast=votes_cast,
         weighted_votes=weighted_votes,
         registration_rate=registration_rate,
+        quorum_registered=quorum_registered,
+        quorum_total=quorum_total,
+        quorum_status=quorum_status,
         recent_votes=recent_votes
     )
     
