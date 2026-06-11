@@ -1601,9 +1601,31 @@ def admin_developer():
 </form>
 
 <table>
-<tr><th>ERF</th></tr>
+<tr>
+  <th>ERF</th>
+  <th>Action</th>
+</tr>
+
 {% for p in dev_proxies %}
-<tr><td>{{ p.erf }}</td></tr>
+<tr>
+  <td>{{ p.erf }}</td>
+  <td>
+    <form method="post"
+          action="/admin/developer/delete-proxy"
+          style="display:inline"
+          onsubmit="return confirm('Delete this developer proxy?');">
+
+      <input type="hidden"
+             name="erf"
+             value="{{ p.erf }}">
+
+      <button type="submit">
+        Delete
+      </button>
+
+    </form>
+  </td>
+</tr>
 {% endfor %}
 </table>
 </div>
@@ -1693,6 +1715,67 @@ def admin_add_developer_proxy():
     )
 
     # Update DEVELOPER registration if exists
+    cur.execute(
+        """
+        UPDATE registrations
+        SET proxies=%s
+        WHERE erf='DEVELOPER'
+        """,
+        (proxy_count,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/admin/developer")
+
+@app.route("/admin/developer/delete-proxy", methods=["POST"])
+def admin_delete_developer_proxy():
+
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    erf = request.form.get("erf", "").strip().upper()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    # Delete proxy
+    cur.execute(
+        """
+        DELETE FROM developer_proxies
+        WHERE erf=%s
+        """,
+        (erf,)
+    )
+
+    # Recalculate count
+    cur.execute(
+        """
+        SELECT COUNT(*) AS proxy_count
+        FROM developer_proxies
+        """
+    )
+
+    row = cur.fetchone()
+    proxy_count = row["proxy_count"] if row else 0
+
+    # Update settings
+    cur.execute(
+        """
+        UPDATE developer_settings
+        SET proxy_count=%s
+        WHERE id=1
+        """,
+        (proxy_count,)
+    )
+
+    # Update developer registration
     cur.execute(
         """
         UPDATE registrations
