@@ -1920,9 +1920,13 @@ def admin_topics():
   <td>{{ t.vote_mode }}</td>
   <td>{{ "OPEN" if t.is_open else "CLOSED" }}</td>
   <td>
-    <a href="/admin/topics/{{ t.id }}/options">Options</a> |
+<a href="/admin/topics/{{ t.id }}/options">Options</a> |
 
-    <a href="/admin/topics/{{ t.id }}/toggle">
+<a href="/admin/topics/{{ t.id }}/export">
+  Export Results
+</a> |
+
+<a href="/admin/topics/{{ t.id }}/toggle">
       {{ "Close" if t.is_open else "Open" }}
     </a>
 
@@ -2099,6 +2103,85 @@ def admin_delete_topic(topic_id):
     conn.close()
 
     return redirect("/admin/topics")
+
+@app.route("/admin/topics/<int:topic_id>/export")
+def export_topic_results(topic_id):
+
+    if not session.get("admin_logged_in"):
+        return redirect("/admin/login")
+
+    schema = session.get("hoa_schema")
+    if not schema:
+        abort(403)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
+
+    cur.execute(
+        """
+        SELECT title
+        FROM topics
+        WHERE id=%s
+        """,
+        (topic_id,)
+    )
+
+    topic = cur.fetchone()
+
+    if not topic:
+        conn.close()
+        abort(404)
+
+    cur.execute(
+        """
+        SELECT
+            o.label,
+            COALESCE(SUM(v.weight),0) AS total_votes
+        FROM options o
+        LEFT JOIN votes v
+            ON v.option_id = o.id
+        WHERE o.topic_id=%s
+        GROUP BY o.id, o.label
+        ORDER BY o.id
+        """,
+        (topic_id,)
+    )
+
+    results = cur.fetchall()
+
+    conn.close()
+
+    out = StringIO()
+    writer = csv.writer(out, delimiter=';')
+
+    writer.writerow(["Topic"])
+    writer.writerow([topic["title"]])
+    writer.writerow([])
+
+    writer.writerow([
+        "Option",
+        "Votes"
+    ])
+
+    for r in results:
+        writer.writerow([
+            r["label"],
+            r["total_votes"]
+        ])
+
+    filename = (
+        topic["title"]
+        .replace(" ", "_")
+        .replace("/", "_")
+    )
+
+    return send_file(
+        BytesIO(out.getvalue().encode()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"{filename}.csv"
+    )
     
 # ======================================================
 # PUBLIC VOTING — CAST VOTE
