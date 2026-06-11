@@ -418,6 +418,29 @@ def admin_dashboard():
     cur.execute("SELECT COUNT(*) AS c FROM developer_proxies")
     developer_proxies = cur.fetchone()["c"]
 
+    # Developer settings
+    cur.execute(
+        """
+        SELECT
+            COALESCE(base_votes,0) AS base_votes,
+            COALESCE(proxy_count,0) AS proxy_count
+        FROM developer_settings
+        LIMIT 1
+        """
+    )
+
+    dev = cur.fetchone()
+
+    if dev:
+        developer_base_votes = dev["base_votes"]
+        developer_total_weight = (
+            dev["base_votes"] +
+            dev["proxy_count"]
+        )
+    else:
+        developer_base_votes = 0
+        developer_total_weight = 0
+
     # Topics
     cur.execute("SELECT COUNT(*) AS c FROM topics")
     topics = cur.fetchone()["c"]
@@ -493,8 +516,18 @@ Public voting link:
 </tr>
 
 <tr>
+  <td>Developer Base Votes</td>
+  <td>{{ developer_base_votes }}</td>
+</tr>
+
+<tr>
   <td>Developer Proxies</td>
   <td>{{ developer_proxies }}</td>
+</tr>
+
+<tr>
+  <td>Developer Total Weight</td>
+  <td>{{ developer_total_weight }}</td>
 </tr>
 
 <tr>
@@ -531,6 +564,8 @@ Public voting link:
         registrations=registrations,
         owner_proxies=owner_proxies,
         developer_proxies=developer_proxies,
+        developer_base_votes=developer_base_votes,
+        developer_total_weight=developer_total_weight,
         topics=topics,
         open_topics=open_topics,
         votes_cast=votes_cast,
