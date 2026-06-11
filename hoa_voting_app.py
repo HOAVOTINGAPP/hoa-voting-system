@@ -477,10 +477,35 @@ def admin_owners():
 
             conn.commit()
 
-    cur.execute(
-        "SELECT * FROM owners ORDER BY erf"
-    )
+    search = request.args.get("search", "").strip()
+
+    if search:
+
+        cur.execute(
+            """
+            SELECT *
+            FROM owners
+            WHERE
+                erf ILIKE %s
+                OR name ILIKE %s
+                OR id_number ILIKE %s
+            ORDER BY erf
+            """,
+            (
+                f"%{search}%",
+                f"%{search}%",
+                f"%{search}%"
+            )
+        )
+
+    else:
+
+        cur.execute(
+            "SELECT * FROM owners ORDER BY erf"
+        )
+
     owners = cur.fetchall()
+    owner_count = len(owners)
 
     conn.close()
 
@@ -489,7 +514,26 @@ def admin_owners():
     return render_template_string(
         BASE_HEAD_ADMIN + """
 <div class="card">
-<h2>Owners</h2>
+<h2>Owners ({{ owner_count }})</h2>
+<form method="get">
+
+  <input
+      name="search"
+      placeholder="Search ERF, Name or ID Number"
+      value="{{ request.args.get('search','') }}"
+  >
+
+  <button type="submit">
+      Search
+  </button>
+
+  <a href="/admin/owners" class="btn">
+      Clear
+  </a>
+
+</form>
+
+<br>
 
 <p>
   <a href="/admin/owners/add" class="btn">
@@ -540,6 +584,7 @@ def admin_owners():
 </div>
 """ + BASE_TAIL,
         owners=owners,
+        owner_count=owner_count,
         branding=branding
     )
     
@@ -704,8 +749,8 @@ ID Number<br>
 
 </div>
 """ + BASE_TAIL,
-        owner=owner,
-        branding=branding
+    owner=owner,
+    branding=branding
     )
 
 @app.route("/admin/owners/delete/<erf>")
