@@ -523,21 +523,75 @@ def admin_dashboard():
 
     conn.close()
     
-    registration_rate = 0
+# --------------------------------------------------
+# Quorum calculation based on voting weight
+# --------------------------------------------------
 
-    if owners > 0:
-        registration_rate = round(
-            (registrations / owners) * 100,
-            1
-        )
-        
-    quorum_registered = registrations
-    quorum_total = owners
+conn = get_conn()
+cur = conn.cursor()
+set_search_path(cur, schema)
 
-    if registration_rate >= quorum_threshold:
-        quorum_status = "YES"
-    else:
-        quorum_status = "NO"
+#
+# Total eligible voting weight
+#
+
+total_weight = owners
+
+cur.execute(
+    """
+    SELECT
+        COALESCE(base_votes,0) AS base_votes,
+        COALESCE(proxy_count,0) AS proxy_count,
+        is_active
+    FROM developer_settings
+    LIMIT 1
+    """
+)
+
+dev = cur.fetchone()
+
+if dev and dev["is_active"]:
+    total_weight += (
+        dev["base_votes"]
+        + dev["proxy_count"]
+    )
+
+#
+# Registered voting weight
+#
+
+cur.execute(
+    """
+    SELECT erf
+    FROM registrations
+    """
+)
+
+registered_weight = 0
+
+for r in cur.fetchall():
+    registered_weight += compute_vote_weight(
+        cur,
+        r["erf"]
+    )
+
+conn.close()
+
+registration_rate = 0
+
+if total_weight > 0:
+    registration_rate = round(
+        (registered_weight / total_weight) * 100,
+        1
+    )
+
+quorum_registered = registered_weight
+quorum_total = total_weight
+
+if registration_rate >= quorum_threshold:
+    quorum_status = "YES"
+else:
+    quorum_status = "NO"
 
     branding = get_hoa_branding(schema)
 
