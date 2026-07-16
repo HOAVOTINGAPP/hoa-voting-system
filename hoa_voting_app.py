@@ -527,71 +527,71 @@ def admin_dashboard():
 # Quorum calculation based on voting weight
 # --------------------------------------------------
 
-conn = get_conn()
-cur = conn.cursor()
-set_search_path(cur, schema)
+    conn = get_conn()
+    cur = conn.cursor()
+    set_search_path(cur, schema)
 
 #
 # Total eligible voting weight
 #
 
-total_weight = owners
+    total_weight = owners
 
-cur.execute(
-    """
-    SELECT
-        COALESCE(base_votes,0) AS base_votes,
-        COALESCE(proxy_count,0) AS proxy_count,
-        is_active
-    FROM developer_settings
-    LIMIT 1
-    """
-)
-
-dev = cur.fetchone()
-
-if dev and dev["is_active"]:
-    total_weight += (
-        dev["base_votes"]
-        + dev["proxy_count"]
+    cur.execute(
+        """
+        SELECT
+            COALESCE(base_votes,0) AS base_votes,
+            COALESCE(proxy_count,0) AS proxy_count,
+            is_active
+        FROM developer_settings
+        LIMIT 1
+        """
     )
+
+    dev = cur.fetchone()
+
+    if dev and dev["is_active"]:
+        total_weight += (
+            dev["base_votes"]
+            + dev["proxy_count"]
+        )
 
 #
 # Registered voting weight
 #
 
-cur.execute(
-    """
-    SELECT erf
-    FROM registrations
-    """
-)
-
-registered_weight = 0
-
-for r in cur.fetchall():
-    registered_weight += compute_vote_weight(
-        cur,
-        r["erf"]
+    cur.execute(
+        """
+        SELECT erf
+        FROM registrations
+        """
     )
 
-conn.close()
+    registered_weight = 0
 
-registration_rate = 0
+    for r in cur.fetchall():
+        registered_weight += compute_vote_weight(
+            cur,
+            r["erf"]
+        )
 
-if total_weight > 0:
-    registration_rate = round(
-        (registered_weight / total_weight) * 100,
-        1
-    )
+    conn.close()
 
-quorum_registered = registered_weight
-quorum_total = total_weight
+    registration_rate = 0
 
-if registration_rate >= quorum_threshold:
-    quorum_status = "YES"
-else:
-    quorum_status = "NO"
+    if total_weight > 0:
+        registration_rate = round(
+            (registered_weight / total_weight) * 100,
+            1
+        )
+
+    quorum_registered = registered_weight
+    quorum_total = total_weight
+
+    if registration_rate >= quorum_threshold:
+        quorum_status = "YES"
+    else:
+        quorum_status = "NO"
 
     branding = get_hoa_branding(schema)
 
