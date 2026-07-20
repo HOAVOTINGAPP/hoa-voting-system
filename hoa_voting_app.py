@@ -551,9 +551,7 @@ def admin_dashboard():
     dev = cur.fetchone()
 
     if dev and dev["is_active"]:
-        total_weight += (
-            dev["base_votes"]
-            + dev["proxy_count"]
+        total_weight += dev["base_votes"]
         )
 
 #
@@ -691,12 +689,12 @@ Public voting link:
 <table>
 
 <tr>
-  <td>Total Owners</td>
+  <td>Total Eligible Voting Weight</td>
   <td>{{ quorum_total }}</td>
 </tr>
 
 <tr>
-  <td>Registered Owners</td>
+  <td>Registered Voting Weight</td>
   <td>{{ quorum_registered }}</td>
 </tr>
 
@@ -2224,7 +2222,26 @@ def admin_delete_developer_proxy():
     return redirect("/admin/developer")
     
 # ======================================================
-# VOTE WEIGHT COMPUTATION (LEGACY-CORRECT)
+# VOTE WEIGHT COMPUTATION
+#
+# Voting Model
+#
+# Every owner contributes exactly one vote.
+#
+# Owner proxies transfer an owner's vote to another owner.
+# They NEVER create additional votes.
+#
+# Developer base votes create additional votes and therefore
+# increase the total voting entitlement.
+#
+# Developer proxies transfer existing owner votes to the
+# developer and therefore DO NOT increase the total voting
+# entitlement.
+#
+# This function determines ONLY the effective voting weight
+# of a single voter.
+#
+# It does NOT determine the total voting entitlement of the HOA.
 # ======================================================
 
 def compute_vote_weight(cur, erf):
