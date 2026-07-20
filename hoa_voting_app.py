@@ -246,6 +246,7 @@ button:hover, .btn:hover {
 <a href="/admin/developer">Developer</a>
 <a href="/admin/export">Export</a>
 <a href="/admin/verify">Verify</a>
+<a href="/admin/settings">Settings</a>
 <a href="/admin/reset">Reset</a>
 <a href="/admin/logout">Logout</a>
 </div>
@@ -3101,7 +3102,11 @@ def admin_settings():
         BASE_HEAD_ADMIN + """
 <div class="card">
 
-<h2>HOA Settings</h2>
+<h2>System Settings</h2>
+
+<p>
+Configure the voting rules for this HOA.
+</p>
 
 <form method="post">
 
