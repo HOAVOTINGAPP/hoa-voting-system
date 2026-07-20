@@ -552,7 +552,7 @@ def admin_dashboard():
 
     if dev and dev["is_active"]:
         total_weight += dev["base_votes"]
-        )
+    )
 
 #
 # Registered voting weight
